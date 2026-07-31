@@ -1,0 +1,123 @@
+name: Build and Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REGISTRY: 003861005384.dkr.ecr.us-east-1.amazonaws.com
+  CLUSTER: research-agent-cluster
+  IMAGE_TAG: ${{ github.sha }}
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push app image
+        run: |
+          docker buildx build --platform linux/amd64 -f app/Dockerfile \
+            -t "$ECR_REGISTRY/research-agent-app:$IMAGE_TAG" \
+            -t "$ECR_REGISTRY/research-agent-app:latest" \
+            --push .
+
+      - name: Build and push PyRIT image
+        run: |
+          docker buildx build --platform linux/amd64 -f pyrit_dashboard/Dockerfile \
+            -t "$ECR_REGISTRY/research-agent-pyrit:$IMAGE_TAG" \
+            -t "$ECR_REGISTRY/research-agent-pyrit:latest" \
+            --push .
+
+      - name: Build and push TensorZero image
+        run: |
+          docker buildx build --platform linux/amd64 -f tensorzero/Dockerfile \
+            -t "$ECR_REGISTRY/research-agent-tensorzero:$IMAGE_TAG" \
+            -t "$ECR_REGISTRY/research-agent-tensorzero:latest" \
+            --push .
+
+      - name: Deploy app service
+        run: |
+          set -e
+          FAMILY=research-agent-app
+          SERVICE=research-agent-app
+
+          OLD_TASK_DEF=$(aws ecs describe-services --cluster "$CLUSTER" --services "$SERVICE" \
+            --query 'services[0].taskDefinition' --output text)
+          echo "OLD_APP_TASK_DEF=$OLD_TASK_DEF" >> "$GITHUB_ENV"
+
+          aws ecs describe-task-definition --task-definition "$FAMILY" --query 'taskDefinition' > app-task-def.json
+
+          jq --arg APP_IMAGE "$ECR_REGISTRY/research-agent-app:$IMAGE_TAG" \
+             --arg TZ_IMAGE "$ECR_REGISTRY/research-agent-tensorzero:$IMAGE_TAG" \
+            '.containerDefinitions |= map(
+               if .name == "app" then .image = $APP_IMAGE
+               elif .name == "tensorzero" then .image = $TZ_IMAGE
+               else . end)
+             | {family, taskRoleArn, executionRoleArn, networkMode, containerDefinitions, requiresCompatibilities, cpu, memory}' \
+            app-task-def.json > app-new-task-def.json
+
+          NEW_ARN=$(aws ecs register-task-definition --cli-input-json file://app-new-task-def.json \
+            --query 'taskDefinition.taskDefinitionArn' --output text)
+          aws ecs update-service --cluster "$CLUSTER" --service "$SERVICE" \
+            --task-definition "$NEW_ARN" --force-new-deployment
+
+      - name: Deploy PyRIT service
+        run: |
+          set -e
+          FAMILY=research-agent-pyrit
+          SERVICE=research-agent-pyrit
+
+          OLD_TASK_DEF=$(aws ecs describe-services --cluster "$CLUSTER" --services "$SERVICE" \
+            --query 'services[0].taskDefinition' --output text)
+          echo "OLD_PYRIT_TASK_DEF=$OLD_TASK_DEF" >> "$GITHUB_ENV"
+
+          aws ecs describe-task-definition --task-definition "$FAMILY" --query 'taskDefinition' > pyrit-task-def.json
+
+          jq --arg PYRIT_IMAGE "$ECR_REGISTRY/research-agent-pyrit:$IMAGE_TAG" \
+            '.containerDefinitions |= map(if .name == "pyrit" then .image = $PYRIT_IMAGE else . end)
+             | {family, taskRoleArn, executionRoleArn, networkMode, containerDefinitions, requiresCompatibilities, cpu, memory}' \
+            pyrit-task-def.json > pyrit-new-task-def.json
+
+          NEW_ARN=$(aws ecs register-task-definition --cli-input-json file://pyrit-new-task-def.json \
+            --query 'taskDefinition.taskDefinitionArn' --output text)
+          aws ecs update-service --cluster "$CLUSTER" --service "$SERVICE" \
+            --task-definition "$NEW_ARN" --force-new-deployment
+
+      - name: Wait for services to stabilize
+        run: |
+          aws ecs wait services-stable --cluster "$CLUSTER" \
+            --services research-agent-app research-agent-pyrit
+
+      - name: Roll back on failure
+        if: failure()
+        run: |
+          if [ -n "${OLD_APP_TASK_DEF:-}" ]; then
+            aws ecs update-service --cluster "$CLUSTER" --service research-agent-app \
+              --task-definition "$OLD_APP_TASK_DEF" --force-new-deployment || true
+          fi
+          if [ -n "${OLD_PYRIT_TASK_DEF:-}" ]; then
+            aws ecs update-service --cluster "$CLUSTER" --service research-agent-pyrit \
+              --task-definition "$OLD_PYRIT_TASK_DEF" --force-new-deployment || true
+          fi
+          aws ecs wait services-stable --cluster "$CLUSTER" \
+            --services research-agent-app research-agent-pyrit || true

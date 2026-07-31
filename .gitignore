@@ -1,0 +1,21 @@
+# Terraform
+terraform/.terraform/
+terraform/*.tfstate
+terraform/*.tfstate.*
+terraform/tfplan*
+terraform/crash.log
+terraform/*.tfvars
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+multi-agent-ai-research-platform/
+
+# Env / secrets
+.env
+*.pem
+
+# OS
+.DS_Store

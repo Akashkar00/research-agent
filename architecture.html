@@ -1,0 +1,800 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Multi-Agent AI Research Platform — Architecture</title>
+<meta name="description" content="Interactive animated architecture diagram for the Multi-Agent AI Research Platform">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+/* ─── Reset & Base ─── */
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html{font-size:14px;scroll-behavior:smooth}
+body{
+  font-family:'Inter',sans-serif;
+  background:#06060e;
+  color:#e0e0f0;
+  min-height:100vh;
+  overflow-x:hidden;
+}
+
+/* ─── Animated Gradient Background ─── */
+body::before{
+  content:'';position:fixed;inset:0;z-index:-2;
+  background:
+    radial-gradient(ellipse 80% 60% at 20% 10%,rgba(88,28,235,.18),transparent),
+    radial-gradient(ellipse 60% 50% at 80% 85%,rgba(14,165,233,.12),transparent),
+    radial-gradient(ellipse 50% 40% at 50% 50%,rgba(168,85,247,.08),transparent);
+}
+
+/* floating orbs */
+.bg-orb{
+  position:fixed;border-radius:50%;filter:blur(100px);opacity:.25;z-index:-1;
+  animation:orbFloat 20s ease-in-out infinite alternate;
+}
+.bg-orb:nth-child(1){width:600px;height:600px;top:-10%;left:-5%;background:#7c3aed;}
+.bg-orb:nth-child(2){width:500px;height:500px;bottom:-10%;right:-5%;background:#0ea5e9;animation-delay:-7s;}
+.bg-orb:nth-child(3){width:400px;height:400px;top:40%;left:50%;background:#ec4899;animation-delay:-14s;}
+@keyframes orbFloat{
+  0%{transform:translate(0,0) scale(1)}
+  50%{transform:translate(40px,-30px) scale(1.1)}
+  100%{transform:translate(-20px,20px) scale(.95)}
+}
+
+/* ─── Header ─── */
+header{
+  text-align:center;padding:48px 24px 24px;position:relative;
+}
+header h1{
+  font-size:2.6rem;font-weight:900;letter-spacing:-.03em;
+  background:linear-gradient(135deg,#a78bfa 0%,#38bdf8 50%,#34d399 100%);
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent;
+  background-clip:text;
+  animation:gradientShift 6s ease-in-out infinite;
+  background-size:200% 200%;
+}
+@keyframes gradientShift{
+  0%,100%{background-position:0% 50%}
+  50%{background-position:100% 50%}
+}
+header p{
+  margin-top:8px;font-size:1rem;color:#94a3b8;font-weight:400;
+}
+.badge-row{display:flex;justify-content:center;gap:10px;margin-top:16px;flex-wrap:wrap}
+.badge{
+  display:inline-flex;align-items:center;gap:6px;
+  padding:5px 14px;border-radius:999px;font-size:.78rem;font-weight:600;
+  background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.08);
+  backdrop-filter:blur(8px);color:#c4b5fd;
+}
+.badge .dot{width:6px;height:6px;border-radius:50%;background:#34d399;animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.4;transform:scale(.7)}}
+
+/* ─── Controls ─── */
+.controls{
+  display:flex;justify-content:center;gap:12px;padding:12px 24px;flex-wrap:wrap;
+}
+.ctrl-btn{
+  padding:8px 20px;border-radius:12px;border:1px solid rgba(255,255,255,.1);
+  background:rgba(255,255,255,.04);color:#c4b5fd;cursor:pointer;
+  font-family:'Inter',sans-serif;font-size:.82rem;font-weight:600;
+  transition:all .25s ease;backdrop-filter:blur(6px);
+}
+.ctrl-btn:hover,.ctrl-btn.active{
+  background:rgba(124,58,237,.25);border-color:rgba(124,58,237,.5);color:#e0e7ff;
+  box-shadow:0 0 20px rgba(124,58,237,.2);
+}
+
+/* ─── Canvas Container ─── */
+#canvas-wrap{
+  position:relative;width:100%;height:calc(100vh - 220px);min-height:600px;
+}
+canvas{display:block;width:100%;height:100%}
+
+/* ─── Tooltip ─── */
+#tooltip{
+  position:fixed;pointer-events:none;z-index:100;opacity:0;
+  max-width:340px;padding:16px 20px;border-radius:16px;
+  background:rgba(15,15,30,.92);backdrop-filter:blur(20px);
+  border:1px solid rgba(124,58,237,.3);
+  box-shadow:0 20px 60px rgba(0,0,0,.5),0 0 30px rgba(124,58,237,.1);
+  transition:opacity .2s ease;
+  font-size:.82rem;line-height:1.55;
+}
+#tooltip.visible{opacity:1}
+#tooltip h3{
+  font-size:.95rem;font-weight:700;margin-bottom:6px;
+  background:linear-gradient(135deg,#a78bfa,#38bdf8);
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent;
+  background-clip:text;
+}
+#tooltip .tt-tag{
+  display:inline-block;padding:2px 8px;border-radius:6px;font-size:.7rem;
+  font-weight:600;margin-bottom:8px;
+}
+#tooltip .tt-desc{color:#94a3b8}
+#tooltip .tt-file{
+  margin-top:8px;font-family:'JetBrains Mono',monospace;font-size:.72rem;
+  color:#7c3aed;opacity:.8;
+}
+#tooltip .tt-deps{margin-top:6px;color:#64748b;font-size:.72rem}
+
+/* ─── Legend ─── */
+.legend{
+  display:flex;justify-content:center;gap:20px;padding:12px 24px 32px;flex-wrap:wrap;
+}
+.legend-item{display:flex;align-items:center;gap:6px;font-size:.75rem;color:#64748b}
+.legend-swatch{width:12px;height:12px;border-radius:4px}
+
+/* ─── Detail Panel ─── */
+#detail-panel{
+  position:fixed;top:0;right:-460px;width:440px;height:100vh;z-index:200;
+  background:rgba(10,10,25,.96);backdrop-filter:blur(30px);
+  border-left:1px solid rgba(124,58,237,.2);
+  transition:right .4s cubic-bezier(.25,.8,.25,1);
+  overflow-y:auto;padding:32px 28px;
+  box-shadow:-20px 0 60px rgba(0,0,0,.4);
+}
+#detail-panel.open{right:0}
+#detail-panel .close-btn{
+  position:absolute;top:16px;right:16px;width:32px;height:32px;
+  border-radius:8px;border:1px solid rgba(255,255,255,.1);
+  background:rgba(255,255,255,.04);color:#94a3b8;cursor:pointer;
+  display:flex;align-items:center;justify-content:center;font-size:1.1rem;
+  transition:all .2s;
+}
+#detail-panel .close-btn:hover{background:rgba(239,68,68,.2);color:#fca5a5}
+#detail-panel h2{
+  font-size:1.4rem;font-weight:800;margin-bottom:4px;
+  background:linear-gradient(135deg,#a78bfa,#38bdf8);
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;
+}
+#detail-panel .dp-cat{
+  font-size:.75rem;font-weight:600;color:#7c3aed;text-transform:uppercase;letter-spacing:.06em;
+  margin-bottom:16px;
+}
+#detail-panel .dp-section{margin-bottom:20px}
+#detail-panel .dp-section h4{font-size:.85rem;font-weight:700;color:#c4b5fd;margin-bottom:6px}
+#detail-panel .dp-section p{color:#94a3b8;font-size:.82rem;line-height:1.6}
+#detail-panel .dp-section ul{list-style:none;padding:0}
+#detail-panel .dp-section ul li{
+  padding:4px 0;color:#94a3b8;font-size:.8rem;
+  padding-left:16px;position:relative;
+}
+#detail-panel .dp-section ul li::before{
+  content:'→';position:absolute;left:0;color:#7c3aed;
+}
+#detail-panel .dp-file{
+  font-family:'JetBrains Mono',monospace;font-size:.75rem;
+  padding:8px 12px;border-radius:8px;
+  background:rgba(124,58,237,.08);border:1px solid rgba(124,58,237,.15);
+  color:#a78bfa;margin-top:8px;
+}
+#detail-panel .dp-connections{
+  display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;
+}
+#detail-panel .dp-conn-tag{
+  padding:3px 10px;border-radius:6px;font-size:.72rem;font-weight:600;
+  background:rgba(56,189,248,.1);border:1px solid rgba(56,189,248,.2);color:#7dd3fc;
+}
+
+/* ─── Responsive ─── */
+@media(max-width:768px){
+  header h1{font-size:1.6rem}
+  #canvas-wrap{height:calc(100vh - 180px);min-height:500px}
+  #detail-panel{width:100%;right:-100%}
+}
+</style>
+</head>
+<body>
+
+<div class="bg-orb"></div>
+<div class="bg-orb"></div>
+<div class="bg-orb"></div>
+
+<header>
+  <h1>Multi-Agent AI Research Platform</h1>
+  <p>Interactive Architecture — Animated Data Flow Visualization</p>
+  <div class="badge-row">
+    <span class="badge"><span class="dot"></span>FastAPI + LangGraph</span>
+    <span class="badge"><span class="dot"></span>Redis Streams</span>
+    <span class="badge"><span class="dot"></span>PostgreSQL + pgvector</span>
+    <span class="badge"><span class="dot"></span>TensorZero Gateway</span>
+    <span class="badge"><span class="dot"></span>AWS Bedrock Guardrails</span>
+  </div>
+</header>
+
+<div class="controls">
+  <button class="ctrl-btn active" onclick="toggleParticles(this)" id="btn-particles">⚡ Data Particles</button>
+  <button class="ctrl-btn" onclick="toggleGlow(this)" id="btn-glow">✨ Extra Glow</button>
+  <button class="ctrl-btn" onclick="resetView(this)">🔄 Reset View</button>
+  <button class="ctrl-btn" onclick="toggleLabels(this)" id="btn-labels">🏷️ Toggle Labels</button>
+</div>
+
+<div id="canvas-wrap">
+  <canvas id="arch-canvas"></canvas>
+</div>
+
+<div class="legend">
+  <div class="legend-item"><div class="legend-swatch" style="background:#7c3aed"></div>API Layer</div>
+  <div class="legend-item"><div class="legend-swatch" style="background:#0ea5e9"></div>Agent Pipeline</div>
+  <div class="legend-item"><div class="legend-swatch" style="background:#10b981"></div>Data & Memory</div>
+  <div class="legend-item"><div class="legend-swatch" style="background:#f59e0b"></div>External Services</div>
+  <div class="legend-item"><div class="legend-swatch" style="background:#ef4444"></div>Safety & Quality</div>
+  <div class="legend-item"><div class="legend-swatch" style="background:#ec4899"></div>Output</div>
+</div>
+
+<div id="tooltip"><h3></h3><span class="tt-tag"></span><div class="tt-desc"></div><div class="tt-file"></div><div class="tt-deps"></div></div>
+
+<div id="detail-panel">
+  <button class="close-btn" onclick="closePanel()">✕</button>
+  <h2 id="dp-title"></h2>
+  <div class="dp-cat" id="dp-cat"></div>
+  <div id="dp-body"></div>
+</div>
+
+<script>
+/* ═══════════════════════════════════════════
+   ARCHITECTURE DATA
+   ═══════════════════════════════════════════ */
+const CATEGORIES = {
+  api:      { color:'#7c3aed', label:'API Layer',        glow:'rgba(124,58,237,.35)' },
+  agent:    { color:'#0ea5e9', label:'Agent Pipeline',    glow:'rgba(14,165,233,.35)' },
+  data:     { color:'#10b981', label:'Data & Memory',     glow:'rgba(16,185,129,.35)' },
+  external: { color:'#f59e0b', label:'External Services', glow:'rgba(245,158,11,.35)' },
+  safety:   { color:'#ef4444', label:'Safety & Quality',  glow:'rgba(239,68,68,.35)' },
+  output:   { color:'#ec4899', label:'Output',            glow:'rgba(236,72,153,.35)' },
+};
+
+const nodes = [
+  // API Layer
+  { id:'client',       x:.08, y:.12, cat:'api',      label:'Client',            icon:'👤', desc:'End user or external system submitting research requests via HTTP.', file:'—', deps:[] },
+  { id:'fastapi',      x:.22, y:.12, cat:'api',      label:'FastAPI App',       icon:'⚡', desc:'Main application server with CORS, lifespan hooks, and route handlers. Entry point for all HTTP traffic.', file:'main.py', deps:['auth','rate_limit'] },
+  { id:'auth',         x:.16, y:.26, cat:'api',      label:'Auth Guard',        icon:'🔑', desc:'API key validation via X-API-Key header. Disabled when no key configured.', file:'auth.py', deps:[] },
+  { id:'rate_limit',   x:.28, y:.26, cat:'api',      label:'Rate Limiter',      icon:'🚦', desc:'Per-IP sliding window rate limiting backed by Redis INCR + EXPIRE.', file:'main.py', deps:['redis'] },
+
+  // Job Queue
+  { id:'queue',        x:.42, y:.12, cat:'data',     label:'Redis Stream Queue', icon:'📬', desc:'Job queue using Redis Streams with consumer groups for horizontal scaling. Each ECS task uses hostname as consumer name.', file:'queue.py', deps:['redis'] },
+  { id:'worker',       x:.56, y:.12, cat:'api',      label:'Worker Loop',       icon:'⚙️', desc:'Background asyncio loop consuming jobs from Redis Streams. Creates async tasks for each job.', file:'main.py', deps:['queue'] },
+
+  // Agent Pipeline (LangGraph)
+  { id:'orchestrator', x:.50, y:.32, cat:'agent',    label:'Orchestrator Agent', icon:'🧠', desc:'Coordinates all sub-agents via LangGraph StateGraph. Manages iteration loop when critic rejects a report.', file:'agents.py', deps:['search_agent','summarize_agent','writer_agent','critic_agent'] },
+  { id:'search_agent', x:.34, y:.48, cat:'agent',    label:'Search Agent',      icon:'🔍', desc:'Finds 5 key facts about a topic. Receives session history for conversation-aware research.', file:'agents.py', deps:['tensorzero'] },
+  { id:'summarize_agent',x:.48,y:.48,cat:'agent',    label:'Summarize Agent',   icon:'📝', desc:'Condenses raw search results into structured bullet points.', file:'agents.py', deps:['tensorzero'] },
+  { id:'writer_agent', x:.62, y:.48, cat:'agent',    label:'Writer Agent',      icon:'✍️', desc:'Produces final structured report with Executive Summary, Key Findings, Analysis, Conclusion. References LTM context.', file:'agents.py', deps:['tensorzero'] },
+  { id:'critic_agent', x:.76, y:.48, cat:'agent',    label:'Critic Agent',      icon:'🔬', desc:'Verifies factual consistency and logical coherence. Returns YES/NO verdict.', file:'agents.py', deps:['tensorzero'] },
+
+  // Memory & Cache
+  { id:'redis',        x:.12, y:.58, cat:'data',     label:'Redis',             icon:'🔴', desc:'In-memory store for: semantic cache, session memory, rate limits, job results, and stream queue.', file:'—', deps:[] },
+  { id:'sem_cache',    x:.08, y:.72, cat:'data',     label:'Semantic Cache',    icon:'💾', desc:'Embedding-based cache with cosine similarity matching. Avoids redundant LLM calls for similar queries.', file:'cache.py', deps:['redis','embeddings'] },
+  { id:'session_mem',  x:.22, y:.72, cat:'data',     label:'Session Memory',    icon:'💬', desc:'Short-term conversation memory stored in Redis lists. Rolling window of last N messages per session.', file:'memory.py', deps:['redis'] },
+  { id:'postgres',     x:.50, y:.72, cat:'data',     label:'PostgreSQL + pgvector', icon:'🐘', desc:'Long-term memory store with vector similarity search via IVFFlat index. Stores reports with 384-dim embeddings.', file:'memory.py', deps:[] },
+  { id:'ltm',          x:.38, y:.84, cat:'data',     label:'Long-Term Memory',  icon:'🧬', desc:'Stores & retrieves past reports. ltm_search for exact matches, ltm_search_related for nearby topics, ltm_diff for change tracking.', file:'memory.py', deps:['postgres','embeddings'] },
+  { id:'pool',         x:.60, y:.84, cat:'data',     label:'Connection Pool',   icon:'🔗', desc:'asyncpg connection pool with configurable min/max sizes for PostgreSQL.', file:'pool.py', deps:['postgres'] },
+
+  // External Services
+  { id:'tensorzero',   x:.84, y:.32, cat:'external', label:'TensorZero Gateway',icon:'🌐', desc:'LLM inference gateway. Routes to underlying model providers. Functions: research_summarize, report_write.', file:'agents.py', deps:[] },
+  { id:'bedrock',      x:.88, y:.58, cat:'external', label:'AWS Bedrock',       icon:'🛡️', desc:'Managed guardrail service for content safety. Validates both inputs and outputs.', file:'guardrails.py', deps:[] },
+  { id:'langsmith',    x:.88, y:.72, cat:'external', label:'LangSmith',         icon:'📊', desc:'Observability platform. Traces agent runs, stores evaluation datasets, and tracks quality metrics.', file:'eval.py', deps:[] },
+  { id:'aws_secrets',  x:.88, y:.14, cat:'external', label:'AWS Secrets Manager',icon:'🔐', desc:'Centralized secret storage. All config loaded at startup via boto3 get_secret_value.', file:'config.py', deps:[] },
+  { id:'embeddings',   x:.22, y:.84, cat:'external', label:'SentenceTransformer',icon:'🧮', desc:'all-MiniLM-L6-v2 model for generating 384-dimensional embeddings. Used by cache and LTM.', file:'memory.py / cache.py', deps:[] },
+
+  // Safety & Evaluation
+  { id:'guardrails',   x:.76, y:.62, cat:'safety',   label:'Guardrails',        icon:'🛡️', desc:'Input/output content filtering via AWS Bedrock ApplyGuardrail API with retry logic.', file:'guardrails.py', deps:['bedrock'] },
+  { id:'evaluator',    x:.76, y:.78, cat:'safety',   label:'LLM Evaluator',     icon:'📋', desc:'4 parallel LLM judges: Relevance, Completeness, Hallucination Risk, Overall Quality. Runs on every job.', file:'eval.py', deps:['tensorzero','langsmith'] },
+
+  // Output
+  { id:'output_pdf',   x:.42, y:.92, cat:'output',   label:'PDF Generator',     icon:'📄', desc:'ReportLab-based PDF generation with automatic pagination for long reports.', file:'output.py', deps:[] },
+  { id:'output_json',  x:.56, y:.92, cat:'output',   label:'JSON Report',       icon:'📦', desc:'Structured JSON output with word count, checksum, and timestamps.', file:'output.py', deps:[] },
+  { id:'output_diff',  x:.70, y:.92, cat:'output',   label:'Report Diff',       icon:'📊', desc:'Unified diff between current and previous report versions using vector similarity.', file:'output.py', deps:['postgres'] },
+
+  // Infra
+  { id:'config',       x:.84, y:.06, cat:'api',      label:'Config',            icon:'⚙️', desc:'Centralized configuration loaded from AWS Secrets Manager. 30+ tunable parameters.', file:'config.py', deps:['aws_secrets'] },
+  { id:'retry',        x:.92, y:.48, cat:'api',      label:'Retry Logic',       icon:'🔄', desc:'Exponential backoff retry wrapper. Configurable max_retries, delay, and backoff multiplier.', file:'retry.py', deps:[] },
+];
+
+const edges = [
+  // Client flow
+  { from:'client',       to:'fastapi',         style:'solid', label:'HTTP' },
+  { from:'fastapi',      to:'auth',            style:'solid', label:'' },
+  { from:'fastapi',      to:'rate_limit',      style:'solid', label:'' },
+  { from:'fastapi',      to:'queue',           style:'solid', label:'push job' },
+  { from:'fastapi',      to:'config',          style:'dashed', label:'reads' },
+
+  // Queue → Worker → Orchestrator
+  { from:'queue',        to:'worker',          style:'solid', label:'consume' },
+  { from:'worker',       to:'orchestrator',    style:'solid', label:'invoke graph' },
+
+  // Orchestrator → Agents (pipeline flow)
+  { from:'orchestrator', to:'search_agent',    style:'solid', label:'1. search' },
+  { from:'search_agent', to:'summarize_agent', style:'solid', label:'2. summarize' },
+  { from:'summarize_agent',to:'writer_agent',  style:'solid', label:'3. write' },
+  { from:'writer_agent', to:'critic_agent',    style:'solid', label:'4. verify' },
+  { from:'critic_agent', to:'search_agent',    style:'dashed', label:'retry loop' },
+
+  // Agent → LLM
+  { from:'search_agent',    to:'tensorzero',   style:'dotted', label:'' },
+  { from:'summarize_agent', to:'tensorzero',   style:'dotted', label:'' },
+  { from:'writer_agent',    to:'tensorzero',   style:'dotted', label:'' },
+  { from:'critic_agent',    to:'tensorzero',   style:'dotted', label:'' },
+  { from:'retry',           to:'tensorzero',   style:'dashed', label:'wraps' },
+
+  // Memory
+  { from:'worker',       to:'sem_cache',       style:'dashed', label:'cache check' },
+  { from:'worker',       to:'session_mem',     style:'dashed', label:'session ctx' },
+  { from:'worker',       to:'ltm',            style:'dashed', label:'LTM lookup' },
+  { from:'rate_limit',   to:'redis',           style:'dotted', label:'' },
+  { from:'sem_cache',    to:'redis',           style:'solid', label:'' },
+  { from:'session_mem',  to:'redis',           style:'solid', label:'' },
+  { from:'queue',        to:'redis',           style:'solid', label:'' },
+  { from:'ltm',          to:'postgres',        style:'solid', label:'vector search' },
+  { from:'pool',         to:'postgres',        style:'solid', label:'' },
+  { from:'sem_cache',    to:'embeddings',      style:'dotted', label:'encode' },
+  { from:'ltm',          to:'embeddings',      style:'dotted', label:'encode' },
+
+  // Safety
+  { from:'worker',       to:'guardrails',      style:'solid', label:'validate I/O' },
+  { from:'guardrails',   to:'bedrock',         style:'solid', label:'' },
+  { from:'worker',       to:'evaluator',       style:'dashed', label:'auto-eval' },
+  { from:'evaluator',    to:'langsmith',       style:'dashed', label:'log scores' },
+
+  // Output
+  { from:'worker',       to:'output_pdf',      style:'dashed', label:'' },
+  { from:'worker',       to:'output_json',     style:'dashed', label:'' },
+  { from:'output_diff',  to:'postgres',        style:'dotted', label:'' },
+
+  // Config
+  { from:'config',       to:'aws_secrets',     style:'solid', label:'load' },
+];
+
+
+/* ═══════════════════════════════════════════
+   CANVAS RENDERER
+   ═══════════════════════════════════════════ */
+const canvas = document.getElementById('arch-canvas');
+const ctx = canvas.getContext('2d');
+const tooltip = document.getElementById('tooltip');
+
+let W, H, dpr;
+let showParticles = true;
+let extraGlow = false;
+let showLabels = true;
+let hoveredNode = null;
+let selectedNode = null;
+let particles = [];
+let time = 0;
+
+// Camera / pan
+let camX = 0, camY = 0, camScale = 1;
+let dragging = false, dragStartX = 0, dragStartY = 0, camStartX = 0, camStartY = 0;
+
+function resize() {
+  const rect = canvas.parentElement.getBoundingClientRect();
+  dpr = window.devicePixelRatio || 1;
+  W = rect.width;
+  H = rect.height;
+  canvas.width = W * dpr;
+  canvas.height = H * dpr;
+  canvas.style.width = W + 'px';
+  canvas.style.height = H + 'px';
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+window.addEventListener('resize', resize);
+resize();
+
+/* ── Node geometry ── */
+const NODE_W = 130, NODE_H = 52, NODE_R = 14;
+
+function nodeRect(n) {
+  const cx = n.x * W + camX;
+  const cy = n.y * H + camY;
+  return {
+    x: (cx - NODE_W / 2) * camScale + W * (1 - camScale) / 2,
+    y: (cy - NODE_H / 2) * camScale + H * (1 - camScale) / 2,
+    w: NODE_W * camScale,
+    h: NODE_H * camScale,
+    cx: cx * camScale + W * (1 - camScale) / 2,
+    cy: cy * camScale + H * (1 - camScale) / 2,
+  };
+}
+
+/* ── Particles ── */
+function spawnParticles() {
+  particles = [];
+  edges.forEach((e, i) => {
+    const count = e.style === 'solid' ? 2 : 1;
+    for (let j = 0; j < count; j++) {
+      particles.push({
+        edgeIdx: i,
+        t: Math.random(),
+        speed: .12 + Math.random() * .18,
+        size: 2 + Math.random() * 2,
+      });
+    }
+  });
+}
+spawnParticles();
+
+/* ── Drawing helpers ── */
+function roundRect(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  ctx.lineTo(x + r, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+  ctx.lineTo(x, y + r);
+  ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.closePath();
+}
+
+function getNodeById(id) {
+  return nodes.find(n => n.id === id);
+}
+
+function drawEdge(e) {
+  const from = getNodeById(e.from);
+  const to = getNodeById(e.to);
+  if (!from || !to) return;
+  const r1 = nodeRect(from);
+  const r2 = nodeRect(to);
+
+  const isHighlighted = hoveredNode && (hoveredNode.id === e.from || hoveredNode.id === e.to);
+  const fromCat = CATEGORIES[from.cat];
+
+  ctx.save();
+  ctx.beginPath();
+
+  if (e.style === 'dashed') ctx.setLineDash([8, 5]);
+  else if (e.style === 'dotted') ctx.setLineDash([3, 4]);
+  else ctx.setLineDash([]);
+
+  ctx.strokeStyle = isHighlighted
+    ? fromCat.color
+    : 'rgba(100,116,139,.2)';
+  ctx.lineWidth = isHighlighted ? 2.2 : 1;
+
+  if (isHighlighted && extraGlow) {
+    ctx.shadowColor = fromCat.glow;
+    ctx.shadowBlur = 12;
+  }
+
+  // Bezier curve
+  const dx = r2.cx - r1.cx;
+  const dy = r2.cy - r1.cy;
+  const cpOff = Math.min(Math.abs(dx), Math.abs(dy)) * .35;
+  const cpx1 = r1.cx + dx * .3;
+  const cpy1 = r1.cy - cpOff * Math.sign(dy || 1) * .5;
+  const cpx2 = r1.cx + dx * .7;
+  const cpy2 = r2.cy + cpOff * Math.sign(dy || 1) * .5;
+
+  ctx.moveTo(r1.cx, r1.cy);
+  ctx.bezierCurveTo(cpx1, cpy1, cpx2, cpy2, r2.cx, r2.cy);
+  ctx.stroke();
+
+  // Arrowhead
+  const t2 = .98;
+  const ax = bezierPoint(r1.cx, cpx1, cpx2, r2.cx, t2);
+  const ay = bezierPoint(r1.cy, cpy1, cpy2, r2.cy, t2);
+  const bx = bezierPoint(r1.cx, cpx1, cpx2, r2.cx, t2 - .03);
+  const by = bezierPoint(r1.cy, cpy1, cpy2, r2.cy, t2 - .03);
+  const angle = Math.atan2(ay - by, ax - bx);
+  const aSize = isHighlighted ? 8 : 5;
+  ctx.beginPath();
+  ctx.setLineDash([]);
+  ctx.fillStyle = ctx.strokeStyle;
+  ctx.moveTo(ax, ay);
+  ctx.lineTo(ax - aSize * Math.cos(angle - .4), ay - aSize * Math.sin(angle - .4));
+  ctx.lineTo(ax - aSize * Math.cos(angle + .4), ay - aSize * Math.sin(angle + .4));
+  ctx.fill();
+
+  // Edge label
+  if (e.label && isHighlighted && showLabels) {
+    const lx = bezierPoint(r1.cx, cpx1, cpx2, r2.cx, .5);
+    const ly = bezierPoint(r1.cy, cpy1, cpy2, r2.cy, .5);
+    ctx.font = `500 ${10 * camScale}px Inter`;
+    ctx.fillStyle = 'rgba(203,213,225,.7)';
+    ctx.textAlign = 'center';
+    ctx.fillText(e.label, lx, ly - 6);
+  }
+
+  ctx.restore();
+}
+
+function bezierPoint(p0, p1, p2, p3, t) {
+  const u = 1 - t;
+  return u * u * u * p0 + 3 * u * u * t * p1 + 3 * u * t * t * p2 + t * t * t * p3;
+}
+
+function drawParticle(p) {
+  const e = edges[p.edgeIdx];
+  const from = getNodeById(e.from);
+  const to = getNodeById(e.to);
+  if (!from || !to) return;
+  const r1 = nodeRect(from);
+  const r2 = nodeRect(to);
+
+  const dx = r2.cx - r1.cx;
+  const dy = r2.cy - r1.cy;
+  const cpOff = Math.min(Math.abs(dx), Math.abs(dy)) * .35;
+  const cpx1 = r1.cx + dx * .3;
+  const cpy1 = r1.cy - cpOff * Math.sign(dy || 1) * .5;
+  const cpx2 = r1.cx + dx * .7;
+  const cpy2 = r2.cy + cpOff * Math.sign(dy || 1) * .5;
+
+  const px = bezierPoint(r1.cx, cpx1, cpx2, r2.cx, p.t);
+  const py = bezierPoint(r1.cy, cpy1, cpy2, r2.cy, p.t);
+
+  const cat = CATEGORIES[from.cat];
+  const grd = ctx.createRadialGradient(px, py, 0, px, py, p.size * 3);
+  grd.addColorStop(0, cat.color);
+  grd.addColorStop(1, 'transparent');
+
+  ctx.beginPath();
+  ctx.arc(px, py, p.size, 0, Math.PI * 2);
+  ctx.fillStyle = cat.color;
+  ctx.fill();
+
+  // glow
+  ctx.beginPath();
+  ctx.arc(px, py, p.size * 3, 0, Math.PI * 2);
+  ctx.fillStyle = grd;
+  ctx.fill();
+}
+
+function drawNode(n) {
+  const r = nodeRect(n);
+  const cat = CATEGORIES[n.cat];
+  const isHovered = hoveredNode && hoveredNode.id === n.id;
+  const isConnected = hoveredNode && edges.some(e =>
+    (e.from === hoveredNode.id && e.to === n.id) ||
+    (e.to === hoveredNode.id && e.from === n.id)
+  );
+  const isDimmed = hoveredNode && !isHovered && !isConnected;
+
+  ctx.save();
+  ctx.globalAlpha = isDimmed ? .25 : 1;
+
+  // Glow
+  if (isHovered || (extraGlow && !isDimmed)) {
+    ctx.shadowColor = cat.glow;
+    ctx.shadowBlur = isHovered ? 30 : 12;
+  }
+
+  // Background
+  roundRect(r.x, r.y, r.w, r.h, NODE_R * camScale);
+  const bgGrd = ctx.createLinearGradient(r.x, r.y, r.x + r.w, r.y + r.h);
+  bgGrd.addColorStop(0, 'rgba(20,20,40,.85)');
+  bgGrd.addColorStop(1, 'rgba(15,15,35,.92)');
+  ctx.fillStyle = bgGrd;
+  ctx.fill();
+
+  // Border
+  ctx.strokeStyle = isHovered ? cat.color : `${cat.color}55`;
+  ctx.lineWidth = isHovered ? 2 : 1;
+  ctx.stroke();
+
+  // Accent line at top
+  ctx.beginPath();
+  ctx.moveTo(r.x + NODE_R * camScale, r.y);
+  ctx.lineTo(r.x + r.w - NODE_R * camScale, r.y);
+  ctx.strokeStyle = cat.color;
+  ctx.lineWidth = 2.5 * camScale;
+  ctx.stroke();
+
+  // Breathing animation
+  if (!isDimmed) {
+    const breath = Math.sin(time * 2 + n.x * 10 + n.y * 10) * .03 + .07;
+    roundRect(r.x, r.y, r.w, r.h, NODE_R * camScale);
+    ctx.fillStyle = cat.color.replace(')', `,${breath})`).replace('rgb', 'rgba');
+    ctx.fill();
+  }
+
+  ctx.shadowBlur = 0;
+  ctx.shadowColor = 'transparent';
+
+  // Icon + Label
+  const iconSize = 16 * camScale;
+  const textX = r.x + 8 * camScale + iconSize + 4 * camScale;
+  ctx.font = `${iconSize}px sans-serif`;
+  ctx.textBaseline = 'middle';
+  ctx.fillText(n.icon, r.x + 6 * camScale, r.cy);
+
+  if (showLabels) {
+    ctx.font = `600 ${10.5 * camScale}px Inter`;
+    ctx.fillStyle = '#e2e8f0';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    const maxTextW = r.w - iconSize - 18 * camScale;
+    ctx.fillText(n.label, textX, r.cy, maxTextW);
+  }
+
+  ctx.restore();
+}
+
+/* ── Hit testing ── */
+function hitTest(mx, my) {
+  for (let i = nodes.length - 1; i >= 0; i--) {
+    const r = nodeRect(nodes[i]);
+    if (mx >= r.x && mx <= r.x + r.w && my >= r.y && my <= r.y + r.h) return nodes[i];
+  }
+  return null;
+}
+
+/* ── Tooltip ── */
+function showTooltip(n, mx, my) {
+  const cat = CATEGORIES[n.cat];
+  tooltip.querySelector('h3').textContent = `${n.icon} ${n.label}`;
+  const tag = tooltip.querySelector('.tt-tag');
+  tag.textContent = cat.label;
+  tag.style.background = cat.color + '22';
+  tag.style.color = cat.color;
+  tag.style.border = `1px solid ${cat.color}44`;
+  tooltip.querySelector('.tt-desc').textContent = n.desc;
+  tooltip.querySelector('.tt-file').textContent = n.file !== '—' ? `📁 ${n.file}` : '';
+  
+  const connNodes = edges
+    .filter(e => e.from === n.id || e.to === n.id)
+    .map(e => e.from === n.id ? e.to : e.from)
+    .map(id => getNodeById(id)?.label)
+    .filter(Boolean);
+  tooltip.querySelector('.tt-deps').textContent = connNodes.length ? `↔ ${connNodes.join(', ')}` : '';
+
+  let tx = mx + 16, ty = my + 16;
+  if (tx + 340 > window.innerWidth) tx = mx - 356;
+  if (ty + 200 > window.innerHeight) ty = my - 200;
+  tooltip.style.left = tx + 'px';
+  tooltip.style.top = ty + 'px';
+  tooltip.classList.add('visible');
+}
+function hideTooltip() { tooltip.classList.remove('visible'); }
+
+/* ── Detail Panel ── */
+function openPanel(n) {
+  const cat = CATEGORIES[n.cat];
+  document.getElementById('dp-title').textContent = `${n.icon} ${n.label}`;
+  document.getElementById('dp-cat').textContent = cat.label;
+  
+  const connEdges = edges.filter(e => e.from === n.id || e.to === n.id);
+  const inbound = connEdges.filter(e => e.to === n.id).map(e => {
+    const src = getNodeById(e.from);
+    return src ? `${src.icon} ${src.label}${e.label ? ' — ' + e.label : ''}` : '';
+  }).filter(Boolean);
+  const outbound = connEdges.filter(e => e.from === n.id).map(e => {
+    const tgt = getNodeById(e.to);
+    return tgt ? `${tgt.icon} ${tgt.label}${e.label ? ' — ' + e.label : ''}` : '';
+  }).filter(Boolean);
+
+  let html = `
+    <div class="dp-section"><h4>Description</h4><p>${n.desc}</p></div>
+    ${n.file !== '—' ? `<div class="dp-file">📁 app/${n.file}</div>` : ''}
+  `;
+  if (inbound.length) {
+    html += `<div class="dp-section"><h4>Inbound Connections</h4><ul>${inbound.map(i => `<li>${i}</li>`).join('')}</ul></div>`;
+  }
+  if (outbound.length) {
+    html += `<div class="dp-section"><h4>Outbound Connections</h4><ul>${outbound.map(o => `<li>${o}</li>`).join('')}</ul></div>`;
+  }
+
+  // Category peers
+  const peers = nodes.filter(p => p.cat === n.cat && p.id !== n.id);
+  if (peers.length) {
+    html += `<div class="dp-section"><h4>Same Layer</h4><div class="dp-connections">${peers.map(p => `<span class="dp-conn-tag">${p.icon} ${p.label}</span>`).join('')}</div></div>`;
+  }
+
+  document.getElementById('dp-body').innerHTML = html;
+  document.getElementById('detail-panel').classList.add('open');
+  selectedNode = n;
+}
+function closePanel() {
+  document.getElementById('detail-panel').classList.remove('open');
+  selectedNode = null;
+}
+
+/* ── Events ── */
+canvas.addEventListener('mousemove', e => {
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left;
+  const my = e.clientY - rect.top;
+  
+  if (dragging) {
+    camX = camStartX + (e.clientX - dragStartX) / camScale;
+    camY = camStartY + (e.clientY - dragStartY) / camScale;
+    canvas.style.cursor = 'grabbing';
+    hideTooltip();
+    return;
+  }
+
+  const hit = hitTest(mx, my);
+  if (hit) {
+    hoveredNode = hit;
+    canvas.style.cursor = 'pointer';
+    showTooltip(hit, e.clientX, e.clientY);
+  } else {
+    hoveredNode = null;
+    canvas.style.cursor = 'grab';
+    hideTooltip();
+  }
+});
+
+canvas.addEventListener('mousedown', e => {
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left;
+  const my = e.clientY - rect.top;
+  const hit = hitTest(mx, my);
+  if (hit) {
+    openPanel(hit);
+  } else {
+    dragging = true;
+    dragStartX = e.clientX;
+    dragStartY = e.clientY;
+    camStartX = camX;
+    camStartY = camY;
+  }
+});
+canvas.addEventListener('mouseup', () => { dragging = false; canvas.style.cursor = 'grab'; });
+canvas.addEventListener('mouseleave', () => { dragging = false; hideTooltip(); });
+
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  camScale = Math.max(.4, Math.min(2.5, camScale - e.deltaY * .001));
+}, { passive: false });
+
+/* ── Controls ── */
+function toggleParticles(btn) {
+  showParticles = !showParticles;
+  btn.classList.toggle('active');
+}
+function toggleGlow(btn) {
+  extraGlow = !extraGlow;
+  btn.classList.toggle('active');
+}
+function toggleLabels(btn) {
+  showLabels = !showLabels;
+  btn.classList.toggle('active');
+}
+function resetView() {
+  camX = 0; camY = 0; camScale = 1;
+}
+
+/* ── Main loop ── */
+function draw() {
+  ctx.clearRect(0, 0, W, H);
+  time += .008;
+
+  // Grid dots
+  ctx.fillStyle = 'rgba(100,116,139,.06)';
+  const gridSpace = 40 * camScale;
+  const offX = (camX * camScale + W * (1 - camScale) / 2) % gridSpace;
+  const offY = (camY * camScale + H * (1 - camScale) / 2) % gridSpace;
+  for (let gx = offX; gx < W; gx += gridSpace) {
+    for (let gy = offY; gy < H; gy += gridSpace) {
+      ctx.beginPath();
+      ctx.arc(gx, gy, 1, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  // Edges
+  edges.forEach(drawEdge);
+
+  // Particles
+  if (showParticles) {
+    particles.forEach(p => {
+      p.t += p.speed * .008;
+      if (p.t > 1) p.t -= 1;
+      drawParticle(p);
+    });
+  }
+
+  // Nodes
+  nodes.forEach(drawNode);
+
+  requestAnimationFrame(draw);
+}
+draw();
+</script>
+</body>
+</html>

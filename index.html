@@ -1,0 +1,380 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Autonomous Research Agent</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f5f6f8;
+    --surface: #ffffff;
+    --border: #e0e2e7;
+    --text: #1a1d23;
+    --muted: #6b7280;
+    --accent: #4f46e5;
+    --accent-hover: #4338ca;
+    --danger: #dc2626;
+    --ok: #16a34a;
+    --warn: #d97706;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1115;
+      --surface: #171a21;
+      --border: #2a2e37;
+      --text: #e6e8ec;
+      --muted: #9199a6;
+      --accent: #818cf8;
+      --accent-hover: #a5b4fc;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.5;
+  }
+  .wrap { max-width: 780px; margin: 0 auto; padding: 2rem 1.25rem 4rem; }
+  header { margin-bottom: 1.75rem; }
+  h1 { font-size: 1.4rem; margin: 0 0 .25rem; }
+  .sub { color: var(--muted); font-size: .9rem; }
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 1.25rem;
+    margin-bottom: 1.25rem;
+  }
+  .card h2 { font-size: .8rem; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0 0 .9rem; font-weight: 600; }
+  label { display: block; font-size: .85rem; margin-bottom: .3rem; color: var(--muted); }
+  input[type=text], input[type=password], textarea, select {
+    width: 100%;
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: .55rem .65rem;
+    color: var(--text);
+    font-size: .92rem;
+    font-family: inherit;
+  }
+  textarea { resize: vertical; min-height: 4.5rem; }
+  .row { display: flex; gap: .75rem; }
+  .row > div { flex: 1; }
+  .field { margin-bottom: .9rem; }
+  .field:last-child { margin-bottom: 0; }
+  button {
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    padding: .6rem 1.1rem;
+    font-size: .9rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  button:hover { background: var(--accent-hover); }
+  button:disabled { opacity: .55; cursor: not-allowed; }
+  button.secondary {
+    background: transparent;
+    color: var(--text);
+    border: 1px solid var(--border);
+  }
+  button.secondary:hover { background: var(--border); }
+  .actions { display: flex; gap: .6rem; flex-wrap: wrap; margin-top: 1rem; }
+  .status-line { display: flex; align-items: center; gap: .5rem; font-size: .88rem; color: var(--muted); margin-top: .9rem; }
+  .spinner {
+    width: 14px; height: 14px; border-radius: 50%;
+    border: 2px solid var(--border); border-top-color: var(--accent);
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .badge { display: inline-block; padding: .15rem .5rem; border-radius: 999px; font-size: .75rem; font-weight: 600; }
+  .badge.done { background: rgba(22,163,74,.15); color: var(--ok); }
+  .badge.error, .badge.blocked { background: rgba(220,38,38,.15); color: var(--danger); }
+  .badge.pending { background: rgba(217,119,6,.15); color: var(--warn); }
+  pre.report {
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-family: inherit;
+    font-size: .92rem;
+    margin: 0;
+  }
+  pre.json {
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-family: var(--mono);
+    font-size: .8rem;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: .75rem;
+    max-height: 420px;
+    overflow: auto;
+  }
+  .banner {
+    border-radius: 8px;
+    padding: .65rem .8rem;
+    font-size: .85rem;
+    margin-bottom: 1rem;
+  }
+  .banner.error { background: rgba(220,38,38,.12); color: var(--danger); border: 1px solid rgba(220,38,38,.3); }
+  .hidden { display: none !important; }
+  .diff-box { margin-top: 1rem; border-top: 1px dashed var(--border); padding-top: 1rem; }
+  footer { text-align: center; color: var(--muted); font-size: .78rem; margin-top: 2rem; }
+  a.pdf-link { color: var(--accent); font-size: .85rem; text-decoration: none; }
+  a.pdf-link:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Autonomous Research Agent</h1>
+    <div class="sub">Give it a topic — it researches, writes, safety-checks, caches, and remembers.</div>
+  </header>
+
+  <div class="card">
+    <h2>Settings</h2>
+    <div class="row">
+      <div class="field">
+        <label for="apiKey">API Key (leave blank if none set)</label>
+        <input type="password" id="apiKey" placeholder="X-API-Key value" autocomplete="off">
+      </div>
+      <div class="field">
+        <label for="sessionId">Session ID</label>
+        <input type="text" id="sessionId" autocomplete="off">
+      </div>
+    </div>
+  </div>
+
+  <div id="errorBanner" class="banner error hidden"></div>
+
+  <div class="card">
+    <h2>New Research Job</h2>
+    <div class="field">
+      <label for="topic">Topic</label>
+      <textarea id="topic" placeholder="e.g. AI chip market 2025"></textarea>
+    </div>
+    <div class="row">
+      <div class="field">
+        <label for="format">Output format</label>
+        <select id="format">
+          <option value="text">Text</option>
+          <option value="pdf">PDF</option>
+          <option value="json">JSON</option>
+        </select>
+      </div>
+    </div>
+    <div class="actions">
+      <button id="startBtn">Start Research</button>
+      <button id="diffBtn" class="secondary">Show Changes vs Previous</button>
+    </div>
+    <div id="statusLine" class="status-line hidden">
+      <span class="spinner"></span>
+      <span id="statusText">Working…</span>
+    </div>
+  </div>
+
+  <div id="resultCard" class="card hidden">
+    <h2>Result <span id="resultBadge" class="badge"></span></h2>
+    <div id="resultBody"></div>
+    <div id="diffBody" class="diff-box hidden"></div>
+  </div>
+
+  <footer>API: <span id="apiBase"></span></footer>
+</div>
+
+<script>
+(() => {
+  const API_BASE = window.location.origin;
+  document.getElementById('apiBase').textContent = API_BASE;
+
+  const $ = (id) => document.getElementById(id);
+  const apiKeyInput = $('apiKey');
+  const sessionIdInput = $('sessionId');
+  const topicInput = $('topic');
+  const formatSelect = $('format');
+  const startBtn = $('startBtn');
+  const diffBtn = $('diffBtn');
+  const statusLine = $('statusLine');
+  const statusText = $('statusText');
+  const resultCard = $('resultCard');
+  const resultBadge = $('resultBadge');
+  const resultBody = $('resultBody');
+  const diffBody = $('diffBody');
+  const errorBanner = $('errorBanner');
+
+  apiKeyInput.value = localStorage.getItem('ra_api_key') || '';
+  sessionIdInput.value = localStorage.getItem('ra_session_id') || crypto.randomUUID();
+  localStorage.setItem('ra_session_id', sessionIdInput.value);
+
+  apiKeyInput.addEventListener('input', () => localStorage.setItem('ra_api_key', apiKeyInput.value));
+  sessionIdInput.addEventListener('input', () => localStorage.setItem('ra_session_id', sessionIdInput.value));
+
+  let currentJobId = null;
+  let currentTopic = null;
+  let pollTimer = null;
+
+  function showError(msg) {
+    errorBanner.textContent = msg;
+    errorBanner.classList.remove('hidden');
+  }
+  function clearError() {
+    errorBanner.classList.add('hidden');
+    errorBanner.textContent = '';
+  }
+  function headers(extra) {
+    const h = Object.assign({}, extra);
+    if (apiKeyInput.value) h['X-API-Key'] = apiKeyInput.value;
+    return h;
+  }
+  function setBusy(busy, label) {
+    startBtn.disabled = busy;
+    diffBtn.disabled = busy;
+    statusLine.classList.toggle('hidden', !busy);
+    if (label) statusText.textContent = label;
+  }
+
+  async function startResearch() {
+    clearError();
+    const topic = topicInput.value.trim();
+    if (!topic) { showError('Enter a topic first.'); return; }
+    resultCard.classList.add('hidden');
+    diffBody.classList.add('hidden');
+    setBusy(true, 'Submitting job…');
+    try {
+      const res = await fetch(`${API_BASE}/research`, {
+        method: 'POST',
+        headers: headers({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({
+          topic,
+          session_id: sessionIdInput.value,
+          output_format: formatSelect.value,
+        }),
+      });
+      if (!res.ok) {
+        const detail = await safeDetail(res);
+        throw new Error(detail || `Request failed (${res.status})`);
+      }
+      const data = await res.json();
+      currentJobId = data.job_id;
+      currentTopic = topic;
+      if (data.session_id) {
+        sessionIdInput.value = data.session_id;
+        localStorage.setItem('ra_session_id', data.session_id);
+      }
+      setBusy(true, `Job ${currentJobId.slice(0, 8)}… researching`);
+      poll();
+    } catch (e) {
+      setBusy(false);
+      showError(e.message || String(e));
+    }
+  }
+
+  async function safeDetail(res) {
+    try {
+      const j = await res.json();
+      return j.detail || j.error;
+    } catch { return null; }
+  }
+
+  function poll() {
+    clearTimeout(pollTimer);
+    pollTimer = setTimeout(async () => {
+      try {
+        const res = await fetch(`${API_BASE}/result/${currentJobId}`, { headers: headers() });
+        if (!res.ok) {
+          const detail = await safeDetail(res);
+          throw new Error(detail || `Request failed (${res.status})`);
+        }
+        const data = await res.json();
+        if (data.status === 'pending') {
+          poll();
+          return;
+        }
+        setBusy(false);
+        renderResult(data);
+      } catch (e) {
+        setBusy(false);
+        showError(e.message || String(e));
+      }
+    }, 2500);
+  }
+
+  function renderResult(data) {
+    resultCard.classList.remove('hidden');
+    resultBadge.textContent = data.status;
+    resultBadge.className = 'badge ' + (data.status || '');
+
+    if (data.status === 'error' || data.status === 'blocked') {
+      resultBody.innerHTML = `<div class="banner error">${escapeHtml(data.error || 'Unknown error')}</div>`;
+      return;
+    }
+
+    let html = '';
+    if (data.structured) {
+      html += `<pre class="json">${escapeHtml(JSON.stringify(data.structured, null, 2))}</pre>`;
+    } else {
+      html += `<pre class="report">${escapeHtml(data.report || '')}</pre>`;
+    }
+    if (data.pdf_base64) {
+      html += `<p><a class="pdf-link" href="#" id="pdfDownload">Download PDF</a></p>`;
+    }
+    resultBody.innerHTML = html;
+
+    if (data.pdf_base64) {
+      $('pdfDownload').addEventListener('click', (ev) => {
+        ev.preventDefault();
+        downloadPdf(data.pdf_base64, currentJobId);
+      });
+    }
+  }
+
+  function downloadPdf(base64, jobId) {
+    const bytes = atob(base64);
+    const arr = new Uint8Array(bytes.length);
+    for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
+    const blob = new Blob([arr], { type: 'application/pdf' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${jobId}.pdf`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  async function showDiff() {
+    clearError();
+    const topic = (currentTopic || topicInput.value).trim();
+    if (!topic) { showError('Enter a topic first.'); return; }
+    try {
+      const res = await fetch(`${API_BASE}/diff/${encodeURIComponent(topic)}`, { headers: headers() });
+      if (!res.ok) {
+        const detail = await safeDetail(res);
+        throw new Error(detail || `Request failed (${res.status})`);
+      }
+      const data = await res.json();
+      resultCard.classList.remove('hidden');
+      diffBody.classList.remove('hidden');
+      diffBody.innerHTML = `<h2 style="margin-top:0">Changes vs Previous</h2><pre class="report">${escapeHtml(data.diff)}</pre>`;
+    } catch (e) {
+      showError(e.message || String(e));
+    }
+  }
+
+  function escapeHtml(str) {
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+  }
+
+  startBtn.addEventListener('click', startResearch);
+  diffBtn.addEventListener('click', showDiff);
+})();
+</script>
+</body>
+</html>
