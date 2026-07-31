@@ -10,11 +10,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import redis.asyncio as aioredis
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='{"time":"%(asctime)s","level":"%(levelname)s","logger":"%(name)s","message":"%(message)s"}',
-)
-logger = logging.getLogger(__name__)
+from app.logger import get_logger
+logger = get_logger(__name__)
 
 from app.config import Config
 from app.pool import init_pool, close_pool
@@ -58,7 +55,10 @@ async def _process_job(data: dict, msg_id: str):
     topic = data["topic"]
     session_id = data["session_id"]
     output_format = data.get("output_format", "text")
-    log = logging.getLogger(f"job.{job_id[:8]}")
+    
+    base_log = get_logger(f"job.{job_id[:8]}")
+    log = logging.LoggerAdapter(base_log, extra={"job_id": job_id, "session_id": session_id, "topic": topic})
+    
     try:
         log.info(f"Starting job for topic: {topic}")
 
