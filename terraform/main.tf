@@ -1139,7 +1139,11 @@ resource "aws_iam_role" "github_actions" {
       Condition = {
         StringEquals = { "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com" }
         # Scoped to pushes on main only — a PR from a fork can't assume this role.
-        StringLike = { "token.actions.githubusercontent.com:sub" = "repo:${var.github_repo}:ref:refs/heads/main" }
+        # Wildcarded around owner/repo because GitHub's actual sub claim on this account
+        # embeds numeric owner/repo IDs (repo:OWNER@id/REPO@id:ref:...), not the plain
+        # repo:OWNER/REPO:ref:... form the docs lead with — confirmed via CloudTrail
+        # after the classic exact-match condition rejected every real token.
+        StringLike = { "token.actions.githubusercontent.com:sub" = "repo:${split("/", var.github_repo)[0]}*/${split("/", var.github_repo)[1]}*:ref:refs/heads/main" }
       }
     }]
   })
