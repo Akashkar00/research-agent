@@ -5,6 +5,7 @@ import logging
 from langsmith import Client, traceable
 from app.config import Config
 from app.retry import with_retry
+from app.metrics import record_usage
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +58,10 @@ async def _judge_once(config: Config, prompt: str) -> str:
             },
         )
         r.raise_for_status()
-        return r.json()["content"][0]["text"]
+        body = r.json()
+        usage = body.get("usage") or {}
+        record_usage(usage.get("input_tokens", 0), usage.get("output_tokens", 0))
+        return body["content"][0]["text"]
 
 
 @traceable(run_type="chain", name="eval:relevance")

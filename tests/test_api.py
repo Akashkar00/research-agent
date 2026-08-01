@@ -7,7 +7,6 @@ from app import main as main_module
 async def client(redis, fake_pool, monkeypatch):
     monkeypatch.setattr(main_module, "redis_client", redis)
     monkeypatch.setattr(main_module, "graph", object())  # unused by the routes under test
-    monkeypatch.setattr(main_module, "_worker_consecutive_failures", 0)
     # Normally set inside lifespan(), which we don't run in these route-level tests.
     main_module.app.state.config = main_module.config
     transport = httpx.ASGITransport(app=main_module.app)
@@ -86,10 +85,22 @@ async def test_health_degraded_when_redis_down(client, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_health_ok_when_all_dependencies_up(client, tz_mock):
+async def test_health_ok_when_all_dependencies_up(client, tz_mock, redis):
     tz_mock.get("/health").mock(return_value=httpx.Response(200))
+    await redis.set("worker:heartbeat", "2026-01-01T00:00:00+00:00")
     r = await client.get("/health")
     assert r.status_code == 200
     body = r.json()
     assert body["status"] == "ok"
     assert body["database"] == "ok"
+    assert body["worker"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_health_degraded_when_worker_heartbeat_missing(client, tz_mock):
+    """The worker is now a separate process (app/worker.py) — if it never wrote a
+    heartbeat (crashed, never started), the API must not silently report ok."""
+    tz_mock.get("/health").mock(return_value=httpx.Response(200))
+    r = await client.get("/health")
+    assert r.status_code == 503
+    assert r.json()["worker"] == "error"

@@ -8,6 +8,7 @@ from langsmith import traceable
 from app.config import Config
 from app.retry import with_retry
 from app.tools.search import web_search
+from app.metrics import record_usage
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +52,10 @@ async def _tz_call_once(config: Config, function_name: str, message: str) -> str
             },
         )
         response.raise_for_status()
-        return response.json()["content"][0]["text"]
+        body = response.json()
+        usage = body.get("usage") or {}
+        record_usage(usage.get("input_tokens", 0), usage.get("output_tokens", 0))
+        return body["content"][0]["text"]
 
 
 def _dedupe_by_url(sources: list[dict]) -> list[dict]:

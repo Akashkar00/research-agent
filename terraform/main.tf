@@ -8,6 +8,10 @@ terraform {
       source  = "hashicorp/random"
       version = "~> 3.0"
     }
+    tls = {
+      source  = "hashicorp/tls"
+      version = "~> 4.0"
+    }
   }
   backend "s3" {
     bucket         = "research-agent-tfstate-akashkar"
@@ -109,6 +113,36 @@ variable "cpu_scale_target" {
 variable "acm_certificate_arn" {
   description = "ACM certificate ARN for HTTPS. Leave empty to use HTTP only."
   default     = ""
+}
+
+variable "worker_desired_count" {
+  description = "Initial number of worker ECS tasks"
+  default     = 1
+}
+
+variable "worker_min_capacity" {
+  description = "Minimum number of worker ECS tasks for auto-scaling"
+  default     = 1
+}
+
+variable "worker_max_capacity" {
+  description = "Maximum number of worker ECS tasks for auto-scaling"
+  default     = 5
+}
+
+variable "worker_queue_target" {
+  description = "Target Redis stream depth (jobs) per worker task for auto-scaling"
+  default     = 5
+}
+
+variable "app_request_scale_target" {
+  description = "Target ALB requests per target (per minute) for app auto-scaling"
+  default     = 100
+}
+
+variable "github_repo" {
+  description = "GitHub repo in owner/name form — scopes the OIDC trust policy so only this repo's Actions can assume the deploy role"
+  default     = "Akashkar00/research-agent"
 }
 
 # ─── Data & Locals ────────────────────────────────────────────────────────────
@@ -417,16 +451,29 @@ resource "aws_elasticache_subnet_group" "main" {
   subnet_ids = aws_subnet.private[*].id
 }
 
-resource "aws_elasticache_cluster" "redis" {
-  cluster_id           = "${var.project}-redis"
-  engine               = "redis"
-  node_type            = var.redis_node_type
-  num_cache_nodes      = var.redis_num_cache_nodes
-  parameter_group_name = "default.redis7"
-  engine_version       = "7.1"
-  port                 = 6379
-  subnet_group_name    = aws_elasticache_subnet_group.main.name
-  security_group_ids   = [aws_security_group.redis.id]
+# Encryption in transit/at rest and AUTH tokens are only available on a replication
+# group, not the basic aws_elasticache_cluster resource — even for a single node.
+resource "random_password" "redis_auth" {
+  length  = 32
+  special = false # ElastiCache AUTH tokens reject several special characters
+}
+
+resource "aws_elasticache_replication_group" "redis" {
+  replication_group_id       = "${var.project}-redis"
+  description                = "Session memory + job queue for ${var.project}"
+  engine                     = "redis"
+  engine_version             = "7.1"
+  node_type                  = var.redis_node_type
+  num_cache_clusters         = var.redis_num_cache_nodes
+  parameter_group_name       = "default.redis7"
+  port                       = 6379
+  subnet_group_name          = aws_elasticache_subnet_group.main.name
+  security_group_ids         = [aws_security_group.redis.id]
+  automatic_failover_enabled = false
+  multi_az_enabled           = false
+  transit_encryption_enabled = true
+  at_rest_encryption_enabled = true
+  auth_token                 = random_password.redis_auth.result
 }
 
 # ─── RDS PostgreSQL ───────────────────────────────────────────────────────────
@@ -437,25 +484,27 @@ resource "aws_db_subnet_group" "main" {
 }
 
 resource "aws_db_instance" "postgres" {
-  identifier                = "${var.project}-postgres"
-  engine                    = "postgres"
-  engine_version            = "15.8"
-  instance_class            = var.db_instance_class
-  allocated_storage         = 20
-  max_allocated_storage     = 100
-  db_name                   = "researchdb"
-  username                  = "dbadmin"
-  password                  = random_password.db_password.result
-  db_subnet_group_name      = aws_db_subnet_group.main.name
-  vpc_security_group_ids    = [aws_security_group.rds.id]
-  multi_az                  = var.db_multi_az
-  deletion_protection       = false
-  skip_final_snapshot       = false
-  final_snapshot_identifier = "${var.project}-postgres-final-snapshot"
-  backup_retention_period   = 1
-  backup_window             = "03:00-04:00"
-  maintenance_window        = "sun:05:00-sun:06:00"
-  tags                      = { Name = "${var.project}-postgres" }
+  identifier                   = "${var.project}-postgres"
+  engine                       = "postgres"
+  engine_version               = "15.8"
+  instance_class               = var.db_instance_class
+  allocated_storage            = 20
+  max_allocated_storage        = 100
+  db_name                      = "researchdb"
+  username                     = "dbadmin"
+  password                     = random_password.db_password.result
+  db_subnet_group_name         = aws_db_subnet_group.main.name
+  vpc_security_group_ids       = [aws_security_group.rds.id]
+  multi_az                     = var.db_multi_az
+  storage_encrypted            = true
+  performance_insights_enabled = true
+  deletion_protection          = true
+  skip_final_snapshot          = false
+  final_snapshot_identifier    = "${var.project}-postgres-final-snapshot"
+  backup_retention_period      = 1
+  backup_window                = "03:00-04:00"
+  maintenance_window           = "sun:05:00-sun:06:00"
+  tags                         = { Name = "${var.project}-postgres" }
 }
 
 resource "random_password" "db_password" {
@@ -621,6 +670,21 @@ resource "aws_iam_role_policy" "ecs_task_policy" {
   })
 }
 
+resource "aws_iam_role_policy" "ecs_task_cloudwatch_metrics" {
+  # PutMetricData has no resource-level permissions — the worker uses this to publish
+  # its own Redis stream depth (QueueDepth) so autoscaling can target it directly.
+  name = "${var.project}-task-cloudwatch-metrics"
+  role = aws_iam_role.ecs_task.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["cloudwatch:PutMetricData"]
+      Resource = "*"
+    }]
+  })
+}
+
 resource "aws_cloudwatch_log_group" "app" {
   name              = "/ecs/${var.project}-app"
   retention_in_days = var.log_retention_days
@@ -633,6 +697,16 @@ resource "aws_cloudwatch_log_group" "pyrit" {
 
 resource "aws_cloudwatch_log_group" "tensorzero" {
   name              = "/ecs/${var.project}-tensorzero"
+  retention_in_days = var.log_retention_days
+}
+
+resource "aws_cloudwatch_log_group" "worker" {
+  name              = "/ecs/${var.project}-worker"
+  retention_in_days = var.log_retention_days
+}
+
+resource "aws_cloudwatch_log_group" "tensorzero_worker" {
+  name              = "/ecs/${var.project}-tensorzero-worker"
   retention_in_days = var.log_retention_days
 }
 
@@ -663,9 +737,12 @@ resource "aws_secretsmanager_secret_version" "config" {
     BEDROCK_GUARDRAIL_VERSION = aws_bedrock_guardrail_version.main.version
 
     # Infrastructure endpoints
-    REDIS_URL      = "redis://${aws_elasticache_cluster.redis.cache_nodes[0].address}:6379"
+    REDIS_URL      = "rediss://:${random_password.redis_auth.result}@${aws_elasticache_replication_group.redis.primary_endpoint_address}:6379"
     TENSORZERO_URL = "http://localhost:3000"
     DATABASE_URL   = "postgresql://dbadmin:${random_password.db_password.result}@${aws_db_instance.postgres.endpoint}/researchdb"
+
+    # CORS — restricts the API to its own frontend origin instead of allow_origins=["*"]
+    ALLOWED_ORIGIN = "http://${aws_lb.main.dns_name}"
 
     # Tunable parameters (all have safe defaults in config.py)
     CACHE_TTL                  = "3600"
@@ -757,8 +834,13 @@ resource "aws_ecs_task_definition" "pyrit" {
     portMappings = [{ containerPort = 8001, protocol = "tcp" }]
     environment = [
       { name = "TARGET_URL", value = "http://${aws_lb.main.dns_name}" },
-      { name = "AWS_REGION", value = var.aws_region },
-      { name = "REDIS_URL", value = "redis://${aws_elasticache_cluster.redis.cache_nodes[0].address}:6379" }
+      { name = "AWS_REGION", value = var.aws_region }
+    ]
+    # REDIS_URL now embeds the ElastiCache AUTH token — must go through Secrets Manager,
+    # not a plaintext environment value visible in DescribeTaskDefinition.
+    secrets = [
+      { name = "REDIS_URL", valueFrom = "${aws_secretsmanager_secret.config.arn}:REDIS_URL::" },
+      { name = "API_KEY", valueFrom = "${aws_secretsmanager_secret.config.arn}:API_KEY::" }
     ]
     logConfiguration = {
       logDriver = "awslogs"
@@ -769,6 +851,55 @@ resource "aws_ecs_task_definition" "pyrit" {
       }
     }
   }])
+}
+
+resource "aws_ecs_task_definition" "worker" {
+  # Runs the queue consumer as its own service, decoupled from the API process — the API
+  # scales on ALB request count, this scales on Redis stream depth (see autoscaling below).
+  # Reuses the app image with a different container command; no separate build/ECR repo.
+  family                   = "${var.project}-worker"
+  network_mode             = "awsvpc"
+  requires_compatibilities = ["FARGATE"]
+  cpu                      = var.app_cpu
+  memory                   = var.app_memory
+  execution_role_arn       = aws_iam_role.ecs_task_execution.arn
+  task_role_arn            = aws_iam_role.ecs_task.arn
+  container_definitions = jsonencode([
+    {
+      name        = "worker"
+      image       = var.app_image
+      essential   = true
+      command     = ["python", "-m", "app.worker"]
+      environment = [{ name = "AWS_REGION", value = var.aws_region }]
+      dependsOn   = [{ containerName = "tensorzero", condition = "START" }]
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          "awslogs-group"         = aws_cloudwatch_log_group.worker.name
+          "awslogs-region"        = var.aws_region
+          "awslogs-stream-prefix" = "ecs"
+        }
+      }
+    },
+    {
+      name         = "tensorzero"
+      image        = var.tensorzero_image
+      essential    = true
+      portMappings = [{ containerPort = 3000, protocol = "tcp" }]
+      secrets = [
+        { name = "OPENAI_API_KEY", valueFrom = "${aws_secretsmanager_secret.config.arn}:OPENAI_API_KEY::" },
+        { name = "GROQ_API_KEY", valueFrom = "${aws_secretsmanager_secret.config.arn}:GROQ_API_KEY::" }
+      ]
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          "awslogs-group"         = aws_cloudwatch_log_group.tensorzero_worker.name
+          "awslogs-region"        = var.aws_region
+          "awslogs-stream-prefix" = "ecs"
+        }
+      }
+    }
+  ])
 }
 
 # ─── ECS Services ─────────────────────────────────────────────────────────────
@@ -813,6 +944,23 @@ resource "aws_ecs_service" "pyrit" {
   }
 }
 
+resource "aws_ecs_service" "worker" {
+  name            = "${var.project}-worker"
+  cluster         = aws_ecs_cluster.main.id
+  task_definition = aws_ecs_task_definition.worker.arn
+  desired_count   = var.worker_desired_count
+  launch_type     = "FARGATE"
+  # No load_balancer block — the worker only pulls from Redis, it accepts no inbound traffic.
+  network_configuration {
+    subnets          = aws_subnet.public[*].id
+    security_groups  = [aws_security_group.ecs_tasks.id]
+    assign_public_ip = true
+  }
+  lifecycle {
+    ignore_changes = [desired_count] # auto-scaling manages this
+  }
+}
+
 # ─── ECS Auto-Scaling ─────────────────────────────────────────────────────────
 
 resource "aws_appautoscaling_target" "app" {
@@ -836,6 +984,54 @@ resource "aws_appautoscaling_policy" "app_cpu" {
     target_value       = var.cpu_scale_target
     scale_in_cooldown  = 300
     scale_out_cooldown = 60
+  }
+}
+
+resource "aws_appautoscaling_policy" "app_requests" {
+  # Primary business-relevant signal for an HTTP API — CPU stays as a safety net above.
+  # Two target-tracking policies on the same target is a supported AWS pattern; it scales
+  # out whenever either policy calls for more capacity.
+  name               = "${var.project}-app-request-scaling"
+  policy_type        = "TargetTrackingScaling"
+  resource_id        = aws_appautoscaling_target.app.resource_id
+  scalable_dimension = aws_appautoscaling_target.app.scalable_dimension
+  service_namespace  = aws_appautoscaling_target.app.service_namespace
+  target_tracking_scaling_policy_configuration {
+    predefined_metric_specification {
+      predefined_metric_type = "ALBRequestCountPerTarget"
+      resource_label         = "${aws_lb.main.arn_suffix}/${aws_lb_target_group.app.arn_suffix}"
+    }
+    target_value       = var.app_request_scale_target
+    scale_in_cooldown  = 300
+    scale_out_cooldown = 60
+  }
+}
+
+resource "aws_appautoscaling_target" "worker" {
+  max_capacity       = var.worker_max_capacity
+  min_capacity       = var.worker_min_capacity
+  resource_id        = "service/${aws_ecs_cluster.main.name}/${aws_ecs_service.worker.name}"
+  scalable_dimension = "ecs:service:DesiredCount"
+  service_namespace  = "ecs"
+}
+
+resource "aws_appautoscaling_policy" "worker_queue_depth" {
+  # Scales on the worker's own published QueueDepth (Redis XLEN) custom metric — the
+  # actual backlog it exists to drain, not a proxy like CPU.
+  name               = "${var.project}-worker-queue-scaling"
+  policy_type        = "TargetTrackingScaling"
+  resource_id        = aws_appautoscaling_target.worker.resource_id
+  scalable_dimension = aws_appautoscaling_target.worker.scalable_dimension
+  service_namespace  = aws_appautoscaling_target.worker.service_namespace
+  target_tracking_scaling_policy_configuration {
+    target_value       = var.worker_queue_target
+    scale_in_cooldown  = 300
+    scale_out_cooldown = 60
+    customized_metric_specification {
+      metric_name = "QueueDepth"
+      namespace   = "ResearchAgent"
+      statistic   = "Average"
+    }
   }
 }
 
@@ -917,6 +1113,88 @@ resource "aws_iam_role_policy" "eventbridge_ecs_policy" {
   })
 }
 
+# ─── GitHub Actions OIDC (no long-lived AWS keys in CI) ──────────────────────
+
+data "tls_certificate" "github" {
+  url = "https://token.actions.githubusercontent.com/.well-known/openid-configuration"
+}
+
+resource "aws_iam_openid_connect_provider" "github" {
+  url             = "https://token.actions.githubusercontent.com"
+  client_id_list  = ["sts.amazonaws.com"]
+  thumbprint_list = [data.tls_certificate.github.certificates[0].sha1_fingerprint]
+}
+
+resource "aws_iam_role" "github_actions" {
+  name = "${var.project}-github-actions"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Federated = aws_iam_openid_connect_provider.github.arn }
+      Action    = "sts:AssumeRoleWithWebIdentity"
+      Condition = {
+        StringEquals = { "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com" }
+        # Scoped to pushes on main only — a PR from a fork can't assume this role.
+        StringLike = { "token.actions.githubusercontent.com:sub" = "repo:${var.github_repo}:ref:refs/heads/main" }
+      }
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "github_actions_ci" {
+  name = "${var.project}-github-actions-ci"
+  role = aws_iam_role.github_actions.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid      = "ECRAuth"
+        Effect   = "Allow"
+        Action   = "ecr:GetAuthorizationToken"
+        Resource = "*"
+      },
+      {
+        Sid    = "ECRPushPull"
+        Effect = "Allow"
+        Action = [
+          "ecr:BatchCheckLayerAvailability", "ecr:GetDownloadUrlForLayer", "ecr:BatchGetImage",
+          "ecr:PutImage", "ecr:InitiateLayerUpload", "ecr:UploadLayerPart", "ecr:CompleteLayerUpload"
+        ]
+        Resource = [
+          aws_ecr_repository.app.arn,
+          aws_ecr_repository.pyrit.arn,
+          aws_ecr_repository.tensorzero.arn,
+        ]
+      },
+      {
+        Sid      = "ECSReadRegister"
+        Effect   = "Allow"
+        Action   = ["ecs:DescribeTaskDefinition", "ecs:RegisterTaskDefinition"]
+        Resource = "*"
+      },
+      {
+        Sid    = "ECSServiceUpdate"
+        Effect = "Allow"
+        Action = ["ecs:DescribeServices", "ecs:UpdateService"]
+        Resource = [
+          "arn:aws:ecs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:service/${aws_ecs_cluster.main.name}/${aws_ecs_service.app.name}",
+          "arn:aws:ecs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:service/${aws_ecs_cluster.main.name}/${aws_ecs_service.pyrit.name}",
+          "arn:aws:ecs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:service/${aws_ecs_cluster.main.name}/${aws_ecs_service.worker.name}",
+        ]
+      },
+      {
+        Sid      = "PassRoleToECS"
+        Effect   = "Allow"
+        Action   = "iam:PassRole"
+        Resource = [aws_iam_role.ecs_task_execution.arn, aws_iam_role.ecs_task.arn]
+      },
+    ]
+  })
+}
+
+data "aws_caller_identity" "current" {}
+
 # ─── Outputs ──────────────────────────────────────────────────────────────────
 
 output "alb_dns" {
@@ -936,10 +1214,14 @@ output "tensorzero_ecr_url" {
 }
 
 output "redis_endpoint" {
-  value = aws_elasticache_cluster.redis.cache_nodes[0].address
+  value = aws_elasticache_replication_group.redis.primary_endpoint_address
 }
 
 output "db_endpoint" {
   value     = aws_db_instance.postgres.endpoint
   sensitive = true
+}
+
+output "github_actions_role_arn" {
+  value = aws_iam_role.github_actions.arn
 }

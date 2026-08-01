@@ -7,7 +7,7 @@ on:
 
 env:
   AWS_REGION: us-east-1
-  ECR_REGISTRY: 003861005384.dkr.ecr.us-east-1.amazonaws.com
+  ECR_REGISTRY: ${{ vars.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com
   CLUSTER: research-agent-cluster
   IMAGE_TAG: ${{ github.sha }}
 
@@ -30,7 +30,7 @@ jobs:
         run: pip install -r requirements.txt -r requirements-dev.txt
 
       - name: Lint
-        run: ruff check app/ pyrit_dashboard/
+        run: ruff check app/ redteam_harness/
 
       - name: Run tests with coverage gate
         run: python -m pytest -q --cov=app --cov-fail-under=60
@@ -49,6 +49,9 @@ jobs:
   build-and-deploy:
     needs: test
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # required for OIDC — no long-lived AWS keys stored in GitHub
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -56,8 +59,7 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/research-agent-github-actions
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Login to ECR
@@ -73,9 +75,9 @@ jobs:
             -t "$ECR_REGISTRY/research-agent-app:latest" \
             --push .
 
-      - name: Build and push PyRIT image
+      - name: Build and push red-team harness image
         run: |
-          docker buildx build --platform linux/amd64 -f pyrit_dashboard/Dockerfile \
+          docker buildx build --platform linux/amd64 -f redteam_harness/Dockerfile \
             -t "$ECR_REGISTRY/research-agent-pyrit:$IMAGE_TAG" \
             -t "$ECR_REGISTRY/research-agent-pyrit:latest" \
             --push .
@@ -113,7 +115,35 @@ jobs:
           aws ecs update-service --cluster "$CLUSTER" --service "$SERVICE" \
             --task-definition "$NEW_ARN" --force-new-deployment
 
-      - name: Deploy PyRIT service
+      - name: Deploy worker service
+        run: |
+          set -e
+          FAMILY=research-agent-worker
+          SERVICE=research-agent-worker
+
+          OLD_TASK_DEF=$(aws ecs describe-services --cluster "$CLUSTER" --services "$SERVICE" \
+            --query 'services[0].taskDefinition' --output text)
+          echo "OLD_WORKER_TASK_DEF=$OLD_TASK_DEF" >> "$GITHUB_ENV"
+
+          aws ecs describe-task-definition --task-definition "$FAMILY" --query 'taskDefinition' > worker-task-def.json
+
+          # Worker reuses the same app image (different container command), so it shares
+          # the app's image tag — no separate build step or ECR repo.
+          jq --arg APP_IMAGE "$ECR_REGISTRY/research-agent-app:$IMAGE_TAG" \
+             --arg TZ_IMAGE "$ECR_REGISTRY/research-agent-tensorzero:$IMAGE_TAG" \
+            '.containerDefinitions |= map(
+               if .name == "worker" then .image = $APP_IMAGE
+               elif .name == "tensorzero" then .image = $TZ_IMAGE
+               else . end)
+             | {family, taskRoleArn, executionRoleArn, networkMode, containerDefinitions, requiresCompatibilities, cpu, memory}' \
+            worker-task-def.json > worker-new-task-def.json
+
+          NEW_ARN=$(aws ecs register-task-definition --cli-input-json file://worker-new-task-def.json \
+            --query 'taskDefinition.taskDefinitionArn' --output text)
+          aws ecs update-service --cluster "$CLUSTER" --service "$SERVICE" \
+            --task-definition "$NEW_ARN" --force-new-deployment
+
+      - name: Deploy red-team harness service
         run: |
           set -e
           FAMILY=research-agent-pyrit
@@ -138,7 +168,7 @@ jobs:
       - name: Wait for services to stabilize
         run: |
           aws ecs wait services-stable --cluster "$CLUSTER" \
-            --services research-agent-app research-agent-pyrit
+            --services research-agent-app research-agent-worker research-agent-pyrit
 
       - name: Roll back on failure
         if: failure()
@@ -147,9 +177,13 @@ jobs:
             aws ecs update-service --cluster "$CLUSTER" --service research-agent-app \
               --task-definition "$OLD_APP_TASK_DEF" --force-new-deployment || true
           fi
+          if [ -n "${OLD_WORKER_TASK_DEF:-}" ]; then
+            aws ecs update-service --cluster "$CLUSTER" --service research-agent-worker \
+              --task-definition "$OLD_WORKER_TASK_DEF" --force-new-deployment || true
+          fi
           if [ -n "${OLD_PYRIT_TASK_DEF:-}" ]; then
             aws ecs update-service --cluster "$CLUSTER" --service research-agent-pyrit \
               --task-definition "$OLD_PYRIT_TASK_DEF" --force-new-deployment || true
           fi
           aws ecs wait services-stable --cluster "$CLUSTER" \
-            --services research-agent-app research-agent-pyrit || true
+            --services research-agent-app research-agent-worker research-agent-pyrit || true

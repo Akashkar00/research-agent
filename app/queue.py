@@ -50,3 +50,34 @@ async def consume_jobs(redis: aioredis.Redis, config: Config) -> list[dict]:
 
 async def ack_job(redis: aioredis.Redis, config: Config, msg_id: str) -> None:
     await redis.xack(config.stream_key, config.consumer_group, msg_id)
+
+
+DLQ_MAX_DELIVERIES = 3
+
+
+async def dead_letter(redis: aioredis.Redis, config: Config, msg_id: str, data: dict) -> None:
+    """Moves a message that has failed too many times to a separate dead-letter stream
+    and acks the original, so it stops being reclaimed forever."""
+    await redis.xadd(f"{config.stream_key}:dlq", {**data, "original_msg_id": msg_id})
+    await ack_job(redis, config, msg_id)
+
+
+async def claim_stale_jobs(redis: aioredis.Redis, config: Config, min_idle_ms: int = 120_000) -> list[dict]:
+    """XAUTOCLAIM: reclaims messages that have sat unacked longer than min_idle_ms — the
+    worker that read them died mid-job — so they don't strand forever. A message that has
+    already been delivered DLQ_MAX_DELIVERIES times is dead-lettered instead of retried again."""
+    _next_id, messages, _deleted = await redis.xautoclaim(
+        config.stream_key, config.consumer_group, config.consumer_name,
+        min_idle_time=min_idle_ms, start_id="0-0", count=10,
+    )
+    claimed = []
+    for msg_id, data in messages:
+        pending = await redis.xpending_range(
+            config.stream_key, config.consumer_group, min=msg_id, max=msg_id, count=1
+        )
+        delivery_count = pending[0]["times_delivered"] if pending else 1
+        if delivery_count > DLQ_MAX_DELIVERIES:
+            await dead_letter(redis, config, msg_id, data)
+            continue
+        claimed.append({"msg_id": msg_id, "data": data})
+    return claimed

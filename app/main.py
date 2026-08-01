@@ -1,10 +1,6 @@
 import asyncio
-import random
 import uuid
-import logging
-import traceback
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
 import httpx
 from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.responses import Response, FileResponse, JSONResponse
@@ -16,13 +12,14 @@ from app.logger import get_logger
 from app.config import Config
 from app.pool import init_pool, close_pool, get_pool
 from app.auth import require_api_key
-from app.cache import cache_get, cache_set, cache_migrate, cache_count
-from app.guardrails import validate_input, validate_output
-from app.memory import session_add, session_get, ltm_search, ltm_search_related, ltm_store, ltm_diff, db_migrate
-from app.queue import push_job, get_result, set_result, ensure_group, consume_jobs, ack_job
-from app.agents import build_graph, ResearchState
-from app.output import generate_pdf, generate_json_report, get_report_diff
+from app.cache import cache_count, cache_migrate
+from app.guardrails import validate_input
+from app.memory import session_add, session_get, db_migrate
+from app.queue import push_job, get_result
+from app.agents import build_graph
+from app.output import generate_pdf, get_report_diff
 from app.eval import evaluate_report, run_batch_evaluation, fetch_recent_topics
+from app.metrics import read_job_stats
 
 logger = get_logger(__name__)
 
@@ -33,9 +30,6 @@ graph = None
 # Background tasks fired with asyncio.create_task() must be referenced somewhere or
 # they can be garbage-collected mid-flight, silently swallowing their exceptions.
 _background_tasks: set[asyncio.Task] = set()
-
-_worker_consecutive_failures = 0
-_WORKER_DEGRADED_THRESHOLD = 5
 
 
 def spawn_background(coro) -> asyncio.Task:
@@ -75,121 +69,21 @@ async def _rate_limit(request: Request) -> None:
         raise HTTPException(status_code=429, detail="Rate limit exceeded. Try again later.")
 
 
-async def _worker_loop():
-    global _worker_consecutive_failures
-    await ensure_group(redis_client, config)
-    while True:
-        try:
-            jobs = await consume_jobs(redis_client, config)
-            _worker_consecutive_failures = 0
-            for job in jobs:
-                spawn_background(_process_job(job["data"], job["msg_id"]))
-        except Exception:
-            _worker_consecutive_failures += 1
-            logger.error(
-                f"Worker loop error (consecutive failures: {_worker_consecutive_failures}): "
-                f"{traceback.format_exc()}"
-            )
-            await asyncio.sleep(1)
-
-
-async def _process_job(data: dict, msg_id: str):
-    job_id = data["job_id"]
-    topic = data["topic"]
-    session_id = data["session_id"]
-    output_format = data.get("output_format", "text")
-
-    base_log = get_logger("job")
-    log = logging.LoggerAdapter(base_log, extra={"job_id": job_id, "session_id": session_id, "topic": topic})
-
-    try:
-        log.info(f"Starting job for topic: {topic}")
-
-        # Fetch session history before any branch — agent always receives it
-        session_history = await session_get(redis_client, session_id)
-
-        cached = await cache_get(config, topic)
-        if cached:
-            log.info("Cache hit")
-            report_text = cached
-        else:
-            ltm_hit = await ltm_search(config, topic)
-            if ltm_hit:
-                log.info("LTM hit")
-                report_text = ltm_hit["report"]
-            else:
-                log.info("Running multi-agent pipeline")
-                # Find a related (not identical) previous report for the writer to reference
-                ltm_context = await ltm_search_related(config, topic) or ""
-                if ltm_context:
-                    log.info("Found related LTM context for writer agent")
-                state = ResearchState(
-                    topic=topic,
-                    session_id=session_id,
-                    session_history=session_history,  # agent is now context-aware
-                    ltm_context=ltm_context,           # writer builds on prior research
-                    sources=[],
-                    search_results=[],
-                    summaries=[],
-                    report="",
-                    verified=False,
-                    critique=None,
-                    error="",
-                    iterations=0,
-                )
-                final_state = await graph.ainvoke(state)
-                report_text = final_state["report"]
-                ok, reason = await validate_output(config, report_text)
-                if not ok:
-                    await set_result(redis_client, config, job_id, {"status": "blocked", "error": reason})
-                    await ack_job(redis_client, config, msg_id)
-                    return
-                await cache_set(config, topic, report_text)
-                # Store only on fresh generation — storing on every cache/LTM hit too meant
-                # ON CONFLICT never fired (each call used a fresh random id) and duplicate
-                # rows piled up, silently killing the diff feature (it compared a report to
-                # itself). ltm_store now derives a deterministic id from (topic, report).
-                await ltm_store(config, topic, report_text)
-
-        await session_add(redis_client, config, session_id, "assistant", report_text[:config.session_content_truncate])
-        diff = await ltm_diff(config, topic)
-        result: dict = {"status": "done", "topic": topic, "report": report_text, "diff": diff}
-
-        # Automatic per-job evaluation is sampled, not run on every request — the full
-        # judge suite always runs against the golden set instead (evals/run_golden.py).
-        if random.random() < config.eval_sample_rate:
-            spawn_background(evaluate_report(config, job_id, topic, report_text))
-
-        if output_format == "pdf":
-            pdf_bytes = generate_pdf(topic, report_text)
-            result["pdf_base64"] = __import__("base64").b64encode(pdf_bytes).decode()
-        elif output_format == "json":
-            result["structured"] = generate_json_report(topic, report_text, job_id, datetime.now(timezone.utc))
-
-        await set_result(redis_client, config, job_id, result)
-        log.info("Job completed successfully")
-    except Exception as e:
-        log.error(f"Job failed: {traceback.format_exc()}")
-        await set_result(redis_client, config, job_id, {"status": "error", "error": str(e)})
-    finally:
-        await ack_job(redis_client, config, msg_id)
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global redis_client, graph
-    # socket_timeout must exceed consume_jobs' XREADGROUP block=5000 (5s) — otherwise the
-    # client's own read timeout fires before the server's blocking wait completes, and an
-    # idle queue makes every single poll fail with a spurious redis.exceptions.TimeoutError.
+    # socket_timeout must exceed the worker's XREADGROUP block=5000 (5s) — otherwise the
+    # client's own read timeout fires before the server's blocking wait completes.
     redis_client = await aioredis.from_url(
         config.redis_url, decode_responses=True, socket_timeout=10, socket_connect_timeout=10
     )
     await init_pool(config)
     await db_migrate(config)
     await cache_migrate(config)
+    # Only used here for on-demand batch evaluation (/run-evaluation) — the actual research
+    # jobs are processed by the separate worker process/service (app/worker.py).
     graph = build_graph(config)
     app.state.config = config
-    spawn_background(_worker_loop())
     yield
     await redis_client.aclose()
     await close_pool()
@@ -198,7 +92,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Research Agent API", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[config.allowed_origin] if config.allowed_origin else ["*"],
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
@@ -242,7 +136,14 @@ async def health():
     except Exception:
         tensorzero_ok = False
 
-    worker_ok = _worker_consecutive_failures < _WORKER_DEGRADED_THRESHOLD
+    # The worker is a separate process/ECS service now (app/worker.py) — its own liveness
+    # is reflected via a heartbeat key it refreshes every loop iteration, not an in-process
+    # counter this API process could ever see directly.
+    worker_ok = True
+    try:
+        worker_ok = await redis_client.get("worker:heartbeat") is not None
+    except Exception:
+        worker_ok = False
 
     # Any dependency down -> 503, so the ALB deregisters this task instead of routing
     # traffic to one whose DB pool or LLM gateway is actually unreachable.
@@ -317,6 +218,7 @@ async def stats():
             "uptime_hours": round(info["uptime_in_seconds"] / 3600, 1),
         },
         "cache_entries": await cache_count(config),
+        "job_metrics": await read_job_stats(redis_client),
         "tensorzero_url": config.tensorzero_url,
         "guardrail_id": config.bedrock_guardrail_id,
     }

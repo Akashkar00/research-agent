@@ -46,6 +46,10 @@ class Config:
         # Web search grounding (the only source of facts in the pipeline)
         self.tavily_api_key: str = data.get("TAVILY_API_KEY", "")
 
+        # CORS — restricts the API to being called from its own frontend origin instead
+        # of allow_origins=["*"] alongside header auth. Empty falls back to "*" for local dev.
+        self.allowed_origin: str = data.get("ALLOWED_ORIGIN", "")
+
         # Evaluation sampling — full golden-set runs always execute; this only
         # throttles the automatic per-job judge suite in the request path.
         self.eval_sample_rate: float = float(data.get("EVAL_SAMPLE_RATE", 1.0))
