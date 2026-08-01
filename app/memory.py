@@ -1,13 +1,11 @@
 import difflib
+import hashlib
 import json
-import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 import redis.asyncio as aioredis
-from sentence_transformers import SentenceTransformer
 from app.config import Config
+from app.embeddings import embed
 from app.pool import get_pool
-
-_model = SentenceTransformer("all-MiniLM-L6-v2")
 
 
 async def session_add(redis: aioredis.Redis, config: Config, session_id: str, role: str, content: str) -> None:
@@ -44,8 +42,15 @@ async def db_migrate(config: Config) -> None:
         await conn.execute("CREATE INDEX IF NOT EXISTS reports_created_idx ON reports (created_at DESC)")
 
 
-async def ltm_store(config: Config, topic: str, report: str, report_id: str) -> None:
-    embedding = await asyncio.to_thread(lambda: _model.encode(topic).tolist())
+def _report_id(topic: str, report: str) -> str:
+    """Content hash of (topic, report) — re-generating the same report for the same
+    topic is idempotent (ON CONFLICT fires) instead of accumulating duplicate rows."""
+    return hashlib.sha256(f"{topic}\n{report}".encode()).hexdigest()
+
+
+async def ltm_store(config: Config, topic: str, report: str) -> None:
+    embedding = await embed(topic)
+    report_id = _report_id(topic, report)
     pool = get_pool()
     async with pool.acquire() as conn:
         await conn.execute(
@@ -54,12 +59,12 @@ async def ltm_store(config: Config, topic: str, report: str, report_id: str) -> 
             VALUES ($1, $2, $3, $4::vector, $5)
             ON CONFLICT (id) DO NOTHING
             """,
-            report_id, topic, report, str(embedding), datetime.utcnow(),
+            report_id, topic, report, str(embedding), datetime.now(timezone.utc),
         )
 
 
 async def ltm_search(config: Config, topic: str) -> dict | None:
-    embedding = await asyncio.to_thread(lambda: _model.encode(topic).tolist())
+    embedding = await embed(topic)
     pool = get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
@@ -82,7 +87,7 @@ async def ltm_search_related(config: Config, topic: str) -> str | None:
     for the writer agent. Uses a lower threshold than ltm_search so it finds
     nearby topics rather than exact matches.
     """
-    embedding = await asyncio.to_thread(lambda: _model.encode(topic).tolist())
+    embedding = await embed(topic)
     pool = get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(

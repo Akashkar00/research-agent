@@ -9,15 +9,17 @@ Give it a topic → it researches, writes a full report, safety-checks it, cache
 | Component | What It Does |
 |---|---|
 | **FastAPI** | REST API — receives topics, returns reports |
-| **LangGraph** | 4-agent pipeline: Search → Summarize → Write → Verify |
-| **TensorZero** | LLM gateway — routes to GPT-4o, falls back to Groq Llama-3 |
+| **LangGraph** | 4-node pipeline: Search (real web search) → Summarize → Write → Verify (independent critic) |
+| **Tavily** | Real web search — the *only* source of facts the pipeline is allowed to use. No key = jobs fail loudly, never silently fall back to model recall |
+| **TensorZero** | LLM gateway — writer path routes to GPT-4o (falls back to Groq Llama); critic/judge path routes to Groq Llama on purpose, so grading is never done by the model being graded |
 | **AWS Bedrock Guardrails** | Blocks harmful input and output automatically |
-| **Redis (ElastiCache)** | Semantic cache + session memory + job queue |
-| **PostgreSQL + pgvector (RDS)** | Long-term memory — stores reports as vectors, enables semantic search |
-| **LangSmith** | Traces every agent run + LLM-as-judge scores every report |
+| **Redis (ElastiCache)** | Session memory + job queue |
+| **PostgreSQL + pgvector (RDS)** | Long-term memory + semantic cache (both vector-indexed) |
+| **LangSmith** | Traces every agent run + 5 LLM-as-judge metrics on a sample of reports (`EVAL_SAMPLE_RATE`) |
+| **pytest** | 35+ tests against fakeredis/respx stubs, ~66% coverage — CI will not deploy if they fail |
 | **PyRIT 0.14.0** | Automated red team attacks — jailbreak, XPIA, crescendo, skeleton key |
 | **Terraform** | Creates all AWS infrastructure with one command |
-| **GitHub Actions** | Builds Docker images and deploys to ECS automatically on every push |
+| **GitHub Actions** | Runs the test suite, then builds Docker images and deploys to ECS on every push to `main` |
 
 ---
 
@@ -27,18 +29,24 @@ Give it a topic → it researches, writes a full report, safety-checks it, cache
 PROJECT/
 ├── app/
 │   ├── main.py           API, background worker, all endpoints
-│   ├── agents.py         LangGraph multi-agent graph
-│   ├── cache.py          Redis semantic cache
+│   ├── agents.py         LangGraph multi-agent graph (search, summarize, write, critic)
+│   ├── tools/search.py   Tavily web search — the only source of facts
+│   ├── cache.py          Semantic cache (pgvector)
 │   ├── guardrails.py     Bedrock safety checks
 │   ├── memory.py         Session memory (Redis) + long-term memory (pgvector)
+│   ├── embeddings.py     Shared, lazily-loaded sentence-transformer model
 │   ├── queue.py          Redis Streams job queue
 │   ├── output.py         PDF export, JSON report, report diff
-│   ├── eval.py           LangSmith LLM-as-judge evaluation
+│   ├── eval.py           LangSmith LLM-as-judge evaluation (independent judge model)
 │   ├── config.py         Loads everything from AWS Secrets Manager
 │   ├── auth.py           API key middleware
 │   ├── retry.py          Exponential backoff for LLM calls
 │   ├── pool.py           PostgreSQL connection pool
 │   └── Dockerfile
+├── tests/                pytest suite — fakeredis/respx stubs, no network or AWS needed
+├── evals/
+│   ├── golden_set.jsonl  30 hand-picked topics for judge-human correlation
+│   └── run_golden.py     Runs the pipeline over the golden set, reports the correlation
 ├── pyrit_dashboard/
 │   ├── main.py           Red team attack dashboard (PyRIT 0.14.0)
 │   ├── requirements.txt
@@ -49,10 +57,11 @@ PROJECT/
 ├── terraform/
 │   └── main.tf           All AWS infrastructure
 ├── .github/workflows/
-│   └── deploy.yml        CI/CD pipeline with rollback on failure
+│   └── deploy.yml        Tests gate the build; CI/CD pipeline with rollback on failure
 ├── bootstrap.bat         One-time backend setup (Windows)
 ├── bootstrap.sh          One-time backend setup (Mac/Linux)
 ├── requirements.txt      Python dependencies
+├── requirements-dev.txt  Test/lint dependencies (pytest, ruff, fakeredis, respx)
 ├── index.html            Frontend UI
 └── README.md
 ```
@@ -158,15 +167,18 @@ pyrit_ecr_url  = "123456789.dkr.ecr.us-east-1.amazonaws.com/research-agent-pyrit
 
 ### 5. Get your API keys
 
-You need three keys:
+You need four keys:
 
 | Key | Where to get it |
 |---|---|
 | `OPENAI_API_KEY` | https://platform.openai.com/api-keys |
 | `GROQ_API_KEY` | https://console.groq.com/keys |
 | `LANGSMITH_API_KEY` | https://smith.langchain.com → Profile → API Keys → Create |
+| `TAVILY_API_KEY` | https://tavily.com → free tier is 1,000 searches/month |
 
 LangSmith is free. It traces every agent run and stores evaluation scores automatically — no extra setup needed after you add the key.
+
+Tavily is required — it's the *only* source of facts in the pipeline. Without it, every research job fails with a clear error instead of silently falling back to the model's training-data recall.
 
 ---
 
@@ -181,7 +193,8 @@ Replace the `REPLACE_ME` values:
 {
   "OPENAI_API_KEY":    "sk-...",
   "GROQ_API_KEY":      "gsk_...",
-  "LANGSMITH_API_KEY": "ls__..."
+  "LANGSMITH_API_KEY": "ls__...",
+  "TAVILY_API_KEY":    "tvly-..."
 }
 ```
 
@@ -282,10 +295,34 @@ curl http://<alb_dns>/health
 
 Every research job automatically:
 1. Traces every agent node (search, summarize, write, verify) to LangSmith
-2. Runs 4 LLM-as-judge evaluations (relevance, completeness, hallucination risk, quality)
+2. On a sample of requests (`EVAL_SAMPLE_RATE`, default 1.0), runs 5 LLM-as-judge metrics:
+   relevance, completeness, groundedness, overall quality, and citation support rate
 3. Saves scores to a LangSmith dataset called `research-agent-reports`
 
+**The judge is not the writer.** The report is written by GPT-4o (OpenAI); every judge and the
+critic run on Groq's Llama-3.1-8b-instant instead — a different vendor and a different model,
+so the model grading a report never grades its own work. See `tensorzero/tensorzero.toml`
+(`judge_model`) and `app/eval.py`.
+
+A parse failure never becomes a fabricated score: `_parse_score` returns `None`, aggregates
+drop it, and `judge_parse_failure_rate` is reported alongside the real scores.
+
 View traces: https://smith.langchain.com → Project: `research-agent`
+
+### Golden set — measured judge-human agreement
+
+`evals/golden_set.jsonl` ships with 30 hand-picked topics (`must_mention` terms + a `human_quality`
+field you fill in by hand after reading the generated reports — it ships as `null`; a
+self-labeled "human" score would defeat the point). Run it with:
+
+```bash
+python -m evals.run_golden
+```
+
+It reports citation support rate, `must_mention` coverage, and — once you've labeled at least
+5-10 entries — the Spearman correlation between the judge's `overall_quality` score and your
+human labels. **Report that number in this README even if it's weak** — a low, honestly-reported
+correlation is a stronger signal than a dashboard of unverified 8.7/10s.
 
 **Trigger batch evaluation manually** (runs the agent on recent user topics from the DB):
 ```bash

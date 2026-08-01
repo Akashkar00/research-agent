@@ -3,9 +3,18 @@ import boto3
 from app.config import Config
 from app.retry import with_retry
 
+_client = None
+
+
+def _get_client(config: Config):
+    global _client
+    if _client is None:
+        _client = boto3.client("bedrock-runtime", region_name=config.aws_region)
+    return _client
+
 
 def _apply_guardrail_sync(config: Config, text: str, source: str) -> dict:
-    client = boto3.client("bedrock-runtime", region_name=config.aws_region)
+    client = _get_client(config)
     return client.apply_guardrail(
         guardrailIdentifier=config.bedrock_guardrail_id,
         guardrailVersion=config.bedrock_guardrail_version,

@@ -7,6 +7,12 @@ from functools import lru_cache
 
 @lru_cache(maxsize=1)
 def _load_secret() -> dict:
+    # Test-only escape hatch: lets tests import and exercise app.main (which builds a
+    # Config() at module import time) with no AWS credentials and no network access.
+    # Never set in production — ECS tasks don't have this env var.
+    override = os.environ.get("RESEARCH_AGENT_CONFIG_JSON")
+    if override:
+        return json.loads(override)
     region = os.environ.get("AWS_REGION", "us-east-1")
     client = boto3.client("secretsmanager", region_name=region)
     response = client.get_secret_value(SecretId="research-agent/config")
@@ -36,6 +42,13 @@ class Config:
         self.langsmith_api_key: str = data.get("LANGSMITH_API_KEY", "")
         self.langchain_project: str = data.get("LANGCHAIN_PROJECT", "research-agent")
         self.langsmith_dataset: str = data.get("LANGSMITH_DATASET", "research-agent-reports")
+
+        # Web search grounding (the only source of facts in the pipeline)
+        self.tavily_api_key: str = data.get("TAVILY_API_KEY", "")
+
+        # Evaluation sampling — full golden-set runs always execute; this only
+        # throttles the automatic per-job judge suite in the request path.
+        self.eval_sample_rate: float = float(data.get("EVAL_SAMPLE_RATE", 1.0))
 
         # Semantic cache
         self.cache_ttl: int = int(data.get("CACHE_TTL", 3600))

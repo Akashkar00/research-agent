@@ -1,34 +1,75 @@
-import json
-import numpy as np
-import redis.asyncio as aioredis
-from sentence_transformers import SentenceTransformer
+import hashlib
+from datetime import datetime, timedelta, timezone
 from app.config import Config
-
-_model = SentenceTransformer("all-MiniLM-L6-v2")
-_CACHE_PREFIX = "semantic:"
-_EMB_PREFIX = "emb:"
+from app.embeddings import embed
+from app.pool import get_pool
 
 
-def _cosine_similarity(a: list, b: list) -> float:
-    va, vb = np.array(a), np.array(b)
-    return float(np.dot(va, vb) / (np.linalg.norm(va) * np.linalg.norm(vb)))
+async def cache_migrate(config: Config) -> None:
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS semantic_cache (
+                id         TEXT PRIMARY KEY,
+                query      TEXT NOT NULL,
+                result     TEXT NOT NULL,
+                embedding  vector(384) NOT NULL,
+                expires_at TIMESTAMPTZ NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        await conn.execute(f"""
+            CREATE INDEX IF NOT EXISTS semantic_cache_embedding_idx
+            ON semantic_cache USING ivfflat (embedding vector_cosine_ops)
+            WITH (lists = {config.ivfflat_lists})
+        """)
 
 
-def _embed(text: str) -> list:
-    return _model.encode(text).tolist()
+def _cache_key(query: str) -> str:
+    # Stable across processes/replicas — Python's builtin hash() is salted per-process
+    # and would produce a different key for the same query on every restart.
+    return hashlib.sha256(query.encode()).hexdigest()[:16]
 
 
-async def cache_get(redis: aioredis.Redis, config: Config, query: str) -> str | None:
-    query_emb = _embed(query)
-    async for key in redis.scan_iter(f"{_EMB_PREFIX}*"):
-        stored_emb = json.loads(await redis.get(key))
-        if _cosine_similarity(query_emb, stored_emb) >= config.cache_similarity_threshold:
-            cache_key = key.replace(_EMB_PREFIX, _CACHE_PREFIX)
-            return await redis.get(cache_key)
-    return None
+async def cache_get(config: Config, query: str) -> str | None:
+    query_emb = await embed(query)  # off the event loop — was blocking async callers before
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT result FROM semantic_cache
+            WHERE expires_at > NOW()
+              AND 1 - (embedding <=> $1::vector) >= $2
+            ORDER BY embedding <=> $1::vector
+            LIMIT 1
+            """,
+            str(query_emb), config.cache_similarity_threshold,
+        )
+        return row["result"] if row else None
 
 
-async def cache_set(redis: aioredis.Redis, config: Config, query: str, result: str) -> None:
-    key_suffix = abs(hash(query))
-    await redis.setex(f"{_CACHE_PREFIX}{key_suffix}", config.cache_ttl, result)
-    await redis.setex(f"{_EMB_PREFIX}{key_suffix}", config.cache_ttl, json.dumps(_embed(query)))
+async def cache_set(config: Config, query: str, result: str) -> None:
+    query_emb = await embed(query)
+    key = _cache_key(query)
+    expires_at = datetime.now(timezone.utc) + timedelta(seconds=config.cache_ttl)
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO semantic_cache (id, query, result, embedding, expires_at, created_at)
+            VALUES ($1, $2, $3, $4::vector, $5, NOW())
+            ON CONFLICT (id) DO UPDATE SET
+                result = EXCLUDED.result,
+                embedding = EXCLUDED.embedding,
+                expires_at = EXCLUDED.expires_at,
+                created_at = NOW()
+            """,
+            key, query, result, str(query_emb), expires_at,
+        )
+
+
+async def cache_count(config: Config) -> int:
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        return await conn.fetchval("SELECT COUNT(*) FROM semantic_cache WHERE expires_at > NOW()")

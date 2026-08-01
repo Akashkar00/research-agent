@@ -12,6 +12,15 @@ model_name = "gpt-4o"
 type = "groq"
 model_name = "llama-3.1-8b-instant"
 
+# Judge model is intentionally a different vendor+model than the writer's primary
+# (OpenAI GPT-4o) so the model grading a report isn't the model that wrote it.
+[models.judge_model]
+routing = ["groq_judge"]
+
+[models.judge_model.providers.groq_judge]
+type = "groq"
+model_name = "llama-3.1-8b-instant"
+
 [functions.research_summarize]
 type = "chat"
 
@@ -33,3 +42,25 @@ weight = 1.0
 temperature = 0.5
 max_tokens = 4000
 system_template = "templates/report_write_system.minijinja"
+
+[functions.critic]
+type = "chat"
+
+[functions.critic.variants.primary]
+type = "chat_completion"
+model = "judge_model"
+weight = 1.0
+temperature = 0.0
+max_tokens = 800
+system_template = "templates/critic_system.minijinja"
+
+[functions.judge]
+type = "chat"
+
+[functions.judge.variants.primary]
+type = "chat_completion"
+model = "judge_model"
+weight = 1.0
+temperature = 0.0
+max_tokens = 500
+system_template = "templates/judge_system.minijinja"

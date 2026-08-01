@@ -10,8 +10,14 @@ terraform/*.tfvars
 __pycache__/
 *.pyc
 .venv/
+.venv-test/
 venv/
 multi-agent-ai-research-platform/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+evals/golden_results.json
 
 # Env / secrets
 .env
