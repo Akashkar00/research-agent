@@ -56,6 +56,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # The app image build (torch + sentence-transformers) is large enough that the
+      # standard ubuntu-latest runner's ~14GB free disk can run out mid-build, killing
+      # the job with no logs captured. Reclaim space from preinstalled toolchains we
+      # don't use before building anything.
+      - name: Free up runner disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo docker image prune -af || true
+          df -h /
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
