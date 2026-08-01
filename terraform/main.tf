@@ -459,7 +459,10 @@ resource "random_password" "redis_auth" {
 }
 
 resource "aws_elasticache_replication_group" "redis" {
-  replication_group_id       = "${var.project}-redis"
+  # Must differ from the old aws_elasticache_cluster's id ("${var.project}-redis") —
+  # AWS permanently refuses to let a replication group reuse an identifier that was
+  # ever a plain cluster, even after that cluster is fully deleted.
+  replication_group_id       = "${var.project}-cache"
   description                = "Session memory + job queue for ${var.project}"
   engine                     = "redis"
   engine_version             = "7.1"
