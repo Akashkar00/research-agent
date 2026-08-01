@@ -178,7 +178,12 @@ async def _process_job(data: dict, msg_id: str):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global redis_client, graph
-    redis_client = await aioredis.from_url(config.redis_url, decode_responses=True)
+    # socket_timeout must exceed consume_jobs' XREADGROUP block=5000 (5s) — otherwise the
+    # client's own read timeout fires before the server's blocking wait completes, and an
+    # idle queue makes every single poll fail with a spurious redis.exceptions.TimeoutError.
+    redis_client = await aioredis.from_url(
+        config.redis_url, decode_responses=True, socket_timeout=10, socket_connect_timeout=10
+    )
     await init_pool(config)
     await db_migrate(config)
     await cache_migrate(config)
