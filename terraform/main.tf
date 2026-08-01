@@ -772,6 +772,19 @@ resource "aws_secretsmanager_secret_version" "config" {
     DB_POOL_MIN                = "2"
     DB_POOL_MAX                = "10"
   })
+
+  # API keys (OPENAI_API_KEY, GROQ_API_KEY, LANGSMITH_API_KEY, TAVILY_API_KEY — see
+  # README "Fill in Secrets Manager") are set by hand via `aws secretsmanager
+  # put-secret-value` and are NOT declared above. Without ignore_changes, every apply
+  # recomputes this entire secret_string from the block above and overwrites those
+  # manually-set keys back to nothing/REPLACE_ME — this happened for real during the
+  # Tier 2 infra changes and broke the live app. Any future change to an infra-derived
+  # field here (REDIS_URL, ALLOWED_ORIGIN, etc.) now needs a deliberate
+  # `terraform apply -replace=aws_secretsmanager_secret_version.config` (or a manual
+  # put-secret-value) rather than happening automatically as a side effect.
+  lifecycle {
+    ignore_changes = [secret_string]
+  }
 }
 
 # ─── ECS Task Definitions ─────────────────────────────────────────────────────
