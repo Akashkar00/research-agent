@@ -33,7 +33,7 @@ jobs:
         run: ruff check app/ pyrit_dashboard/
 
       - name: Run tests with coverage gate
-        run: pytest -q --cov=app --cov-fail-under=60
+        run: python -m pytest -q --cov=app --cov-fail-under=60
 
       - name: Set up Terraform
         uses: hashicorp/setup-terraform@v3
