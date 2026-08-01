@@ -59,7 +59,10 @@ async def ltm_store(config: Config, topic: str, report: str) -> None:
             VALUES ($1, $2, $3, $4::vector, $5)
             ON CONFLICT (id) DO NOTHING
             """,
-            report_id, topic, report, str(embedding), datetime.now(timezone.utc),
+            # reports.created_at is TIMESTAMP WITHOUT TIME ZONE — asyncpg rejects a
+            # tz-aware value there ("can't subtract offset-naive and offset-aware
+            # datetimes"), so this must stay naive UTC even though utcnow() is deprecated.
+            report_id, topic, report, str(embedding), datetime.now(timezone.utc).replace(tzinfo=None),
         )
 
 
