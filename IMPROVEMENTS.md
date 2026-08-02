@@ -1,550 +1,301 @@
-# IMPROVEMENTS — 6.5 → 8.5
+# IMPROVEMENTS — 7.5 → 8.5+
 
-Concrete work plan to raise this project from "impressive infra, thin GenAI substance"
-to "a fresher project that survives a senior interviewer's questions."
+> **Supersedes** the previous 6.5 → 8.5 roadmap (Tier 1 + Tier 2), which is complete.
+> That version is in git history (`git show 21db10b:IMPROVEMENTS.md`); `PROGRESS.md`
+> tracks it. This file is the current roadmap only.
 
-Current score: **6.5 / 10** for a fresher GenAI engineer role.
-Target after Tier 1 + Tier 2: **8.5 / 10**.
+**Current honest score: 7.5/10.** Not 8.0–8.2. The infrastructure is genuinely
+8+ — separate worker service, `XAUTOCLAIM` + DLQ, queue-depth autoscaling, OIDC CI
+with rollback, behavioural tests that assert the *right* things. The score is held
+down by four things, in order of how much they cost you:
 
-Nothing below adds a new AWS service. Every item either makes an existing claim true,
-fixes a real bug, or replaces a decorative feature with a working one.
+1. **The evaluation story is a shell.** 30/30 golden-set rows have `human_quality: null`.
+   Five judges, a Spearman function, a batch runner — and zero evidence any judge score
+   correlates with reality. For a GenAI role this is the discipline being hired for.
+2. **Every number the system can measure is unpublished.** `/stats.job_metrics` computes
+   p50/p95/cost/hit-rate. The red-team harness runs 16 attacks. None of it is in the README.
+3. **A correctness bug in the flagship critic loop** that actively degrades the citation
+   integrity the whole project claims to guarantee (§B.1).
+4. **Live security no-ops** — `API_KEY` is empty in Secrets Manager, so auth returns early
+   on a public plaintext-HTTP endpoint that spends OpenAI money.
 
----
-
-## Where the 3.5 points are being lost
-
-| Area | Current | Why points are lost | Points back |
-|---|---|---|---|
-| Grounding / retrieval | 4 LLM prompts, no search, no citations | The "research agent" recalls, it doesn't research | **+0.8** |
-| Evaluation integrity | Same model writes and judges, no ground truth | Metrics are not evidence of anything | **+0.6** |
-| Tests | Zero. CI deploys untested code | Contradicts the whole "production rigor" pitch | **+0.5** |
-| Correctness bugs | Blocking event loop, broken diff, broken rate limit | Bugs a reviewer finds in 20 min of reading | **+0.4** |
-| Agent design | Critic loop is a no-op; no tools | LangGraph used where a for-loop would do | **+0.4** |
-| Security / infra honesty | Public subnets, no encryption, unauthenticated PyRIT | Design intent contradicts deployment | **+0.5** |
-| README accuracy | Overclaims PyRIT, "search", deletion protection | Erodes trust in everything else in the doc | **+0.3** |
-
-Tier 1 and Tier 2 below map onto these rows.
+Nothing below is a rewrite. It's ~1.5 days of work total, and the first two sections
+alone move the score more than everything else combined.
 
 ---
 
-# TIER 1 — Non-negotiable (6.5 → ~7.8)
+# TIER A — The score is actually here (7.5 → 8.3)
 
-## 1.1 Give the search agent an actual search tool
+## A.1 Label the golden set and publish the correlation
 
-**Problem.** `SearchAgent.run()` in [agents.py:314](app/agents.py#L314) prompts the LLM to
-"find 5 key facts." There is no search. Every report is model recall bounded by the
-training cutoff, presented to the user as current research.
+**Why this is #1:** the project's headline claim is "LLM evaluation on every request."
+An interviewer asks *"how do you know your judge is right?"* and today the answer is
+"I don't." Everything else in this file is engineering polish; this is the one gap
+that's specifically about the job title.
 
-**Fix.** Add a real web search provider and make it the *only* source of facts.
+**Do:**
 
-Add to `requirements.txt`:
-```
-tavily-python==0.5.0
-```
+1. Run the pipeline over the golden set to generate reports:
+   ```bash
+   python -m evals.run_golden          # writes evals/golden_results.json
+   ```
+2. Read **10–15** of the generated reports yourself. Score each `human_quality` 1–5 in
+   `evals/golden_set.jsonl`. Judge on: are the facts actually in the cited source, is
+   the analysis non-obvious, would a business analyst use this.
+3. Re-run `python -m evals.run_golden`. It prints the Spearman correlation once ≥5 rows
+   are labeled ([evals/run_golden.py:108](evals/run_golden.py#L108)).
+4. Put the number in the README **whatever it is**. `run_golden.py` already tells you to
+   report a weak correlation honestly rather than omit it — do exactly that.
 
-New file `app/tools/search.py`:
+**Do not** batch-label from memory or let an LLM fill the labels. A fabricated human
+label defeats the entire metric, and it's the one number a sharp interviewer will
+probe hardest.
+
+**Done when:** README contains a line like
+`Judge–human agreement (Spearman, n=12): 0.61` — and you can explain what a 0.61
+means and where the judge disagreed with you.
+
+**Bonus, cheap:** note the two or three topics where the judge scored high and you
+scored low. "My judge over-rewards structure and under-penalizes thin sourcing" is a
+*much* stronger interview answer than a good correlation number.
+
+---
+
+## A.2 Publish the numbers the system already computes
+
+You built the instrumentation and reported nothing from it. That reads as "never
+actually run under load."
+
+**Add a `## Measured Results` section to the README** with:
+
+| Number | Where it comes from |
+|---|---|
+| p50 / p95 job latency | `GET /stats` → `job_metrics.p50_latency_s` / `p95_latency_s` |
+| Mean cost per report | `job_metrics.mean_cost_usd` (flag the GPT-4o-blended caveat already in [app/metrics.py:7-12](app/metrics.py#L7-L12)) |
+| Cache + LTM hit rate | `job_metrics.cache_hit_rate`, `ltm_hit_rate` |
+| n (sample size) | `job_metrics.n` — state it; 12 jobs is not 1,200 and pretending otherwise is the overclaim you avoid everywhere else |
+| Mean citation support rate | `run_golden.py` prints it |
+| Red-team results | 16 attacks × 4 categories → `blocked / passed / errored / timeout` table from the harness's `/results` |
+
+Generate real traffic first — 20–30 varied topics through `/research`, then read `/stats`.
+
+**Done when:** every claim in the README's feature table has a number behind it, and
+the red-team table shows real outcomes including any category that *passed* (i.e. got
+through). A harness that reports 16/16 blocked is less credible than one that reports
+13/16 and explains the three.
+
+---
+
+# TIER B — Real bugs (fix before an interviewer finds them)
+
+## B.1 Fix state accumulation in the critic retry loop — **correctness bug**
+
+`ResearchState` is a plain `TypedDict` with no reducers, so LangGraph **overwrites** on
+every node return. When the critic rejects and
+[app/agents.py:274-278](app/agents.py#L274-L278) re-runs search with only
+`missing_queries`, the fields `sources`, `search_results` and `summaries` are all
+*replaced*, not accumulated.
+
+Consequence: the revised report is written from the follow-up queries **alone** — the
+original research is thrown away — and `## References` is rebuilt from a smaller,
+different source set while the model is still instructed to preserve the `[n]` markers
+from the *previous* corpus. Your critic loop degrades the exact citation integrity the
+project is built to guarantee.
+
+**Fix:**
 
 ```python
-import asyncio
-import httpx
-from app.config import Config
-from app.retry import with_retry
+import operator
+from typing import Annotated
 
-
-async def web_search(config: Config, query: str, max_results: int = 6) -> list[dict]:
-    """
-    Returns [{"title", "url", "content", "published_date"}].
-    This is the ONLY source of facts in the pipeline. If it returns nothing,
-    the job fails loudly rather than silently falling back to model recall.
-    """
-    async def _once():
-        async with httpx.AsyncClient(timeout=30) as client:
-            r = await client.post(
-                "https://api.tavily.com/search",
-                json={
-                    "api_key": config.tavily_api_key,
-                    "query": query,
-                    "search_depth": "advanced",
-                    "max_results": max_results,
-                    "include_raw_content": False,
-                },
-            )
-            r.raise_for_status()
-            return r.json()["results"]
-
-    results = await with_retry(_once, max_retries=config.llm_max_retries,
-                               delay=config.llm_retry_delay)
-    if not results:
-        raise RuntimeError(f"No search results for query: {query}")
-    return results
-```
-
-Rewrite `SearchAgent` so the LLM only *selects and condenses* retrieved text — it
-never supplies facts of its own:
-
-```python
-class SearchAgent:
-    """Retrieves real sources, then has the LLM extract facts ONLY from them."""
-
-    @traceable(run_type="tool", name="agent:search")
-    async def run(self, topic: str, session_history: list[dict]) -> dict:
-        # Let the model turn a vague topic into 2-3 concrete search queries
-        queries = await self._plan_queries(topic, session_history)
-
-        result_sets = await asyncio.gather(
-            *[web_search(self.config, q) for q in queries],
-            return_exceptions=True,
-        )
-        sources = _dedupe_by_url(
-            [r for rs in result_sets if not isinstance(rs, Exception) for r in rs]
-        )
-        if not sources:
-            raise RuntimeError("All search queries failed")
-
-        corpus = "\n\n".join(
-            f"[{i+1}] {s['title']} ({s['url']}, {s.get('published_date','n.d.')})\n{s['content']}"
-            for i, s in enumerate(sources)
-        )
-        facts = await _tz_call(
-            self.config,
-            "research_summarize",
-            "Extract the key facts from the sources below.\n"
-            "RULES:\n"
-            "- Use ONLY information present in the sources. Invent nothing.\n"
-            "- Attach a [n] citation to every factual claim.\n"
-            "- If the sources do not answer part of the topic, say so explicitly.\n\n"
-            f"TOPIC: {topic}\n\nSOURCES:\n{corpus}",
-        )
-        return {"facts": facts, "sources": sources}
-```
-
-Then thread `sources` through `ResearchState` and into the writer's prompt, and
-append a **References** section to every report. Update the `report_write`
-minijinja system template to require inline `[n]` citations.
-
-**Acceptance criteria**
-- Every generated report ends with a References list of real, resolvable URLs.
-- Killing the Tavily key makes jobs fail with a clear error — it does **not**
-  silently degrade to model recall.
-- A new `eval:citation_support` judge (see 1.3) scores what fraction of claims
-  carry a citation.
-
-**Effort:** ~4 hours. **This is the single highest-value item in the document.**
-
----
-
-## 1.2 Make the critic loop actually do something
-
-**Problem.** `route()` in [agents.py:440](app/agents.py#L440) sends a rejected report back
-to `search` with identical state and an identical prompt. The critic's reasoning is
-discarded — `CriticAgent.run()` returns a bare `bool`. Iteration 2 reproduces
-iteration 1. A retry loop that cannot change its input is decoration.
-
-**Fix.** Return structured critique and feed it forward.
-
-```python
-class Critique(TypedDict):
-    passed: bool
-    reasons: list[str]        # what's wrong
-    missing_queries: list[str]  # what to search for on the retry
-
-
-class CriticAgent:
-    @traceable(run_type="tool", name="agent:critic")
-    async def run(self, topic: str, report: str, sources: list[dict]) -> Critique:
-        raw = await _tz_call(
-            self.config, "critic",   # dedicated TZ function, see 1.3
-            "Review this report. Check: (a) every claim is supported by the listed "
-            "sources, (b) all four required sections are present, (c) no unsupported "
-            "numbers or dates.\n"
-            "Reply as JSON: {\"passed\": bool, \"reasons\": [...], "
-            "\"missing_queries\": [...]}\n\n"
-            f"TOPIC: {topic}\nSOURCES: {_source_titles(sources)}\n\nREPORT:\n{report}"
-        )
-        return _parse_json_strict(raw, Critique)
-```
-
-Store `critique` in `ResearchState`. On retry, `SearchAgent` runs
-`critique["missing_queries"]` instead of the original query, and `WriterAgent`
-receives `critique["reasons"]` as explicit revision instructions. Cap at
-`agent_max_iterations` as today.
-
-**Acceptance criteria**
-- A LangSmith trace of a rejected run shows *different* search queries on
-  iteration 2 than iteration 1.
-- The writer prompt on iteration 2 visibly contains the critic's reasons.
-
-**Effort:** ~2 hours.
-
----
-
-## 1.3 Stop letting the model grade its own homework
-
-**Problem.** [eval.py](app/eval.py) sends every judge prompt to `research_summarize` —
-the same TensorZero function, same GPT-4o, that wrote the report. The
-hallucination-risk metric is produced by the source of the hallucinations. On top of
-that, `_parse_score` returns `0.5` when the regex misses ([eval.py:734](app/eval.py#L734)),
-so parse failures are indistinguishable from real mediocre scores.
-
-**Fix — four parts.**
-
-**(a) A separate judge model.** In `tensorzero.toml`:
-
-```toml
-[models.judge_model]
-routing = ["anthropic_judge"]
-
-[models.judge_model.providers.anthropic_judge]
-type = "anthropic"
-model_name = "claude-sonnet-4-5"
-
-[functions.judge]
-type = "json"                 # structured output, no regex parsing
-
-[functions.judge.variants.primary]
-type = "chat_completion"
-model = "judge_model"
-temperature = 0.0
-system_template = "templates/judge_system.minijinja"
-
-[functions.critic]
-type = "json"
-
-[functions.critic.variants.primary]
-type = "chat_completion"
-model = "judge_model"
-temperature = 0.0
-```
-
-Writer and judge now differ in both vendor and model. That is defensible in an interview.
-
-**(b) Never fabricate a score.**
-
-```python
-def _parse_score(text: str) -> float | None:
-    m = re.search(r"SCORE:\s*(\d+(?:\.\d+)?)\s*/\s*10", text, re.IGNORECASE)
-    return round(float(m.group(1)) / 10.0, 2) if m else None
-```
-
-Drop `None` scores from the aggregate and emit a `judge_parse_failure_rate`
-metric alongside them. Better: use TensorZero's `type = "json"` function above
-and delete the regex entirely.
-
-**(c) Fix the inverted metric.** `hallucination_risk` is scored 10 = worst while
-every other metric is 10 = best, and nothing in the LangSmith dataset records the
-direction. Either invert it to `groundedness` (10 = fully grounded) or tag each
-metric with `"higher_is_better": bool` in the dataset metadata. Inverting is cleaner.
-
-**(d) Build a real ground-truth set.** Create `evals/golden_set.jsonl` — 30 topics
-you label by hand:
-
-```jsonl
-{"topic": "EU AI Act enforcement timeline", "must_mention": ["August 2026", "GPAI"], "must_not_mention": [], "human_quality": 4}
-```
-
-Add `evals/run_golden.py` that runs the graph over the set and reports:
-- **Judge–human agreement**: Spearman correlation between `overall_quality` and
-  your `human_quality` labels. Print the number. If it's below ~0.5, say so in the
-  README — that is a far stronger signal than a dashboard full of 8.7/10s.
-- **Citation support rate**: fraction of factual sentences carrying a `[n]`.
-- **Coverage**: fraction of `must_mention` terms present.
-
-**(e) Sample, don't judge everything.** [main.py:113](app/main.py#L113) runs four judge
-calls on every single job. Make it configurable — `EVAL_SAMPLE_RATE=0.2` — and
-run the full suite on the golden set instead.
-
-**Acceptance criteria**
-- README states the judge model differs from the writer model, and reports the
-  measured judge–human correlation as a number.
-- No score in LangSmith is ever a fabricated `0.5`.
-
-**Effort:** ~5 hours (most of it labeling 30 topics).
-
----
-
-## 1.4 Add tests, and gate the deploy on them
-
-**Problem.** Zero tests. `.github/workflows/deploy.yml` builds and ships to
-production. The rollback step can only ever fire on a container that fails to boot.
-
-**Fix.** `tests/` with pytest + pytest-asyncio, everything external faked:
-
-```
-tests/
-├── conftest.py              fakeredis fixture, stub TensorZero via respx, stub Tavily
-├── test_cache.py            cosine threshold behaviour, hit/miss, key stability
-├── test_agents.py           graph runs end-to-end against a stubbed gateway;
-│                            critic rejection produces DIFFERENT queries on retry
-├── test_memory.py           ltm_store idempotency; ltm_diff on two genuinely
-│                            different reports returns a non-empty diff
-├── test_eval.py             _parse_score returns None (not 0.5) on garbage
-├── test_guardrails.py       GUARDRAIL_INTERVENED -> (False, reason)
-├── test_queue.py            push -> consume -> ack round-trip on fakeredis
-└── test_api.py              401 without key, 429 past the limit, /health degraded
-                             when Redis is down
-```
-
-Add to `requirements-dev.txt`: `pytest`, `pytest-asyncio`, `fakeredis`, `respx`,
-`ruff`, `mypy`.
-
-Insert as the **first** job in the workflow, with build/deploy depending on it:
-
-```yaml
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with: { python-version: "3.12" }
-      - run: pip install -r requirements.txt -r requirements-dev.txt
-      - run: ruff check app/ pyrit_dashboard/
-      - run: pytest -q --cov=app --cov-fail-under=60
-
-  build-and-deploy:
-    needs: test          # <-- deploy is now gated
-    runs-on: ubuntu-latest
+class ResearchState(TypedDict):
     ...
+    sources: Annotated[list[dict], operator.add]
+    search_results: Annotated[list[str], operator.add]
+    summaries: Annotated[list[str], operator.add]
 ```
 
-Also add `terraform fmt -check` and `terraform validate` to the same job.
+Then de-dupe in `search_node` — `_dedupe_by_url` already exists — so a URL returned by
+both passes doesn't produce two reference entries and shift every `[n]` after it.
 
-**Acceptance criteria**
-- `pytest` passes locally with no network access and no AWS credentials.
-- A deliberately broken assertion blocks the deploy.
-- Coverage badge or number in the README.
-
-**Effort:** ~6 hours. **Highest ratio of interview credibility to effort here.**
-
----
-
-## 1.5 Fix the correctness bugs
-
-Each of these is small, and each is the kind of thing a reviewer finds by reading.
-
-| # | File | Bug | Fix |
-|---|---|---|---|
-| a | [cache.py:1010](app/cache.py#L1010) | `_embed()` runs the transformer **synchronously inside async** `cache_get`, stalling the event loop for every request | Wrap in `asyncio.to_thread`, as [memory.py:516](app/memory.py#L516) already does correctly |
-| b | [cache.py:1011](app/cache.py#L1011) | Cache lookup is O(N): `scan_iter` + one `GET` per key + numpy cosine in Python | Move the semantic cache into pgvector (you already run it) or use Redis 8 vector sets. One indexed query replaces N round-trips |
-| c | [cache.py:1020](app/cache.py#L1020) | `abs(hash(query))` — Python salts string hashes per process, so replicas and restarts produce different keys | `hashlib.sha256(query.encode()).hexdigest()[:16]` |
-| d | [main.py:34](app/main.py#L34) | Rate limit keys on `request.client.host`, which behind an ALB is the ALB. The limit is **global, not per-client** | Parse the leftmost untrusted hop of `X-Forwarded-For`; fall back to `client.host` only when the header is absent |
-| e | [main.py:73,79,106](app/main.py#L73) | `ltm_store` runs on cache hit, LTM hit, *and* fresh generation, each with a new `uuid4()`, so `ON CONFLICT` never fires. Duplicate rows accumulate and `ltm_diff` compares a report to a byte-identical copy — **the diff feature is dead** | Store only on fresh generation. Make the PK a content hash of `(topic, report)` so re-generation is genuinely idempotent |
-| f | cache.py + memory.py | Two `SentenceTransformer` instances loaded at import, ~90 MB duplicated per container | One shared `app/embeddings.py` module with a single lazily-initialised model |
-| g | [guardrails.py:681](app/guardrails.py#L681) | `boto3.client()` constructed on every call | Module-level client, created once |
-| h | [main.py:113](app/main.py#L113) | `asyncio.create_task(...)` with no reference held — the task can be GC'd mid-flight and its exceptions vanish | Keep a module-level `set()` of tasks with a `add_done_callback(discard)`, and log exceptions |
-| i | [main.py:50](app/main.py#L50) | `except Exception: await asyncio.sleep(1)` in `_worker_loop` swallows everything silently. Broken Redis credentials spin forever while `/health` reports OK | Log the exception with traceback; increment a failure counter; mark the app degraded after N consecutive failures |
-| j | [main.py:164](app/main.py#L164) | `/health` checks Redis only, so the ALB keeps routing to tasks with a dead DB pool or unreachable gateway | Check Redis + `SELECT 1` on Postgres + TensorZero `/health`; return 503 when any is down so the target group deregisters |
-| k | [main.py:119](app/main.py#L119), [memory.py:525](app/memory.py#L525) | `datetime.utcnow()` is deprecated in 3.12 | `datetime.now(timezone.utc)` |
-
-**Effort:** ~4 hours total.
-
----
-
-# TIER 2 — Gets you to 8.5
-
-## 2.1 Split the worker out of the API process
-
-**Problem.** `_worker_loop` runs inside the FastAPI process
-([main.py:138](app/main.py#L138)). Autoscaling targets CPU on a process that simultaneously
-serves HTTP and runs 60-second LLM pipelines. You built a Redis Streams queue and
-then didn't decouple anything — which is the one question an interviewer will ask
-the moment they see Streams in the README.
-
-**Fix.**
-- `app/worker.py` with its own `__main__`, running only the consume loop.
-- A third ECS service `research-agent-worker`, no load balancer, no public IP.
-- API scales on ALB `RequestCountPerTarget`; worker scales on **Redis stream depth**
-  (`XLEN` published to CloudWatch as a custom metric, target-tracking on it).
-- Add a claim-check step: `XAUTOCLAIM` for messages pending longer than the job
-  timeout, so a worker dying mid-job doesn't strand the message forever.
-- Add a dead-letter stream after N delivery attempts.
-
-This turns "I used a queue" into "I understand why you use a queue." It is the
-strongest architecture talking point available to you and it costs one Terraform
-resource block plus ~60 lines.
-
-**Effort:** ~4 hours.
-
----
-
-## 2.2 Close the security and infra gaps
-
-| # | Where | Issue | Fix |
-|---|---|---|---|
-| a | [main.tf:783](terraform/main.tf#L783) | ECS tasks run in **public** subnets with `assign_public_ip = true`, making the private subnets and six VPC endpoints largely ornamental | Move tasks to `aws_subnet.private`, `assign_public_ip = false`. The endpoints you already pay for provide ECR/Secrets/Logs/Bedrock reachability. Only the ALB stays public |
-| b | [main.tf:439](terraform/main.tf#L439) | RDS has no `storage_encrypted` | `storage_encrypted = true`, and set `performance_insights_enabled` while you're in there |
-| c | [main.tf:420](terraform/main.tf#L420) | ElastiCache has no transit encryption, no at-rest encryption, no AUTH token | `transit_encryption_enabled = true`, `at_rest_encryption_enabled = true`, `auth_token` from `random_password`, stored in Secrets Manager. Update `REDIS_URL` to `rediss://` |
-| d | [main.tf:452](terraform/main.tf#L452) | `deletion_protection = false` while the README claims it is enabled | Set it `true` and keep the README, or fix the README. **Do not ship a doc that contradicts the code** |
-| e | [main.tf:490](terraform/main.tf#L490) | The PyRIT dashboard is exposed on port 8001 through the ALB with **no auth at all** — `/run-attacks` is world-callable and burns your OpenAI credits | Require the same `X-API-Key` on every PyRIT route, and restrict the 8001 listener rule to your own IP via an ALB listener condition. This is the most exploitable thing in the repo today |
-| f | [main.py:145](app/main.py#L145) | `allow_origins=["*"]` alongside header auth | Restrict to the ALB origin |
-| g | [deploy.yml:29](.github/workflows/deploy.yml#L29) | Long-lived `AWS_ACCESS_KEY_ID` / `SECRET` in GitHub secrets | GitHub OIDC + `aws-actions/configure-aws-credentials` with `role-to-assume`. Zero standing credentials. Two-line change, meaningful signal |
-| h | [deploy.yml:8](.github/workflows/deploy.yml#L8) | Account ID `003861005384` hardcoded | Derive from `aws sts get-caller-identity` or a repo variable |
-| i | [main.tf:504](terraform/main.tf#L504) | HTTPS optional; default deployment is plaintext, which is why `crypto.randomUUID()` broke | Provision an ACM cert and make HTTPS the documented default. Redirect 80 → 443 |
-| j | [Dockerfile](app/Dockerfile) | Container runs as root, single-stage build carrying `gcc`/`libpq-dev` into the runtime image | Multi-stage build, `USER app`, and a `HEALTHCHECK` |
-
-**Effort:** ~4 hours. Items (a), (c), (e), (g) are the ones that get noticed.
-
----
-
-## 2.3 Make the red-team harness honest
-
-**Problem.** [pyrit_dashboard/main.py:110-114](pyrit_dashboard/main.py#L110-L114) initialises
-PyRIT for SQLite memory and then **bypasses it entirely** — attacks are 16 hardcoded
-strings sent by `httpx`. Crescendo is "simulated" with fixed prompts because the
-adversarial LLM isn't available. Worse,
-[main.py:127-131](pyrit_dashboard/main.py#L127-L131):
+**Also fix the test that let this through.**
+[tests/test_agents.py:80](tests/test_agents.py#L80) asserts only that the two queries
+*differ*. It validates the mechanism and misses the semantics. Add:
 
 ```python
-blocked = ("BLOCKED" in response_text or "ERROR" in response_text
-           or "guardrail" in response_text.lower()
-           or len(response_text) < 50)
+# The retry must ADD to the original research, not replace it.
+assert len(final["sources"]) == 2          # one from each pass, deduped
+assert len(final["summaries"]) == 2
+# Every [n] in the body must resolve to a real reference line.
+body, refs = final["report"].split("## References")
+for n in set(re.findall(r"\[(\d+)\]", body)):
+    assert f"[{n}]" in refs
 ```
 
-Any short response, any network error, and any report that merely *mentions* the
-word "guardrail" counts as a successful block. The metric is biased toward
-"we're safe."
+That last assertion is the one worth having — it's a citation-integrity invariant, and
+it's the kind of test that says you understand what the system is *for*.
 
-**Pick one and commit to it.**
+---
 
-**Option A — do it properly.** Wire the real `PromptSendingAttack` with an adversarial
-model as the red-team LLM (Groq is cheap and already configured), so Crescendo
-genuinely escalates across turns based on the target's replies. Persist to PyRIT
-memory and read results back out of it rather than a Redis blob.
+## B.2 Set a real `API_KEY`
 
-**Option B — drop the dependency and be accurate.** Remove `pyrit` from
-`requirements.txt`, rename the service `redteam_harness`, and describe it in the
-README as "a fixed-corpus prompt-injection harness with 16 attack prompts across 4
-categories." Losing the buzzword costs you nothing; being caught claiming a
-framework you bypassed costs you the interview.
+[app/auth.py:6](app/auth.py#L6) returns early when `config.api_key` is empty, and the
+deployed secret is empty. Auth is currently a no-op on a public endpoint with no TLS
+that spends OpenAI money at 10 req/min/IP.
 
-**Either way, fix the classifier.** Determine blocked/passed from the HTTP status and
-the structured `status` field, never from substring matching on report text:
+```bash
+aws secretsmanager get-secret-value --secret-id research-agent/config \
+  --query SecretString --output text > /tmp/cfg.json
+# edit API_KEY in /tmp/cfg.json, then:
+aws secretsmanager put-secret-value --secret-id research-agent/config \
+  --secret-string file:///tmp/cfg.json
+aws ecs update-service --cluster research-agent-cluster \
+  --service research-agent-app --force-new-deployment
+aws ecs update-service --cluster research-agent-cluster \
+  --service research-agent-pyrit --force-new-deployment
+rm /tmp/cfg.json
+```
+
+The `ignore_changes = [secret_string]` lifecycle you added means Terraform won't stomp
+this — that fix is doing its job here.
+
+**Caveat to document, not hide:** without HTTPS the key travels in cleartext. Keep it
+in Known Limitations next to the ACM entry. An API key over plain HTTP is a rate-limit
+identity, not a security boundary — say so.
+
+---
+
+## B.3 Stop swallowing every exception in `ensure_group`
+
+[app/queue.py:27-31](app/queue.py#L27-L31) — a bare `except: pass` makes a Redis outage
+indistinguishable from the expected `BUSYGROUP` on restart. The worker then loops
+silently against a broker it can't reach.
 
 ```python
-blocked = r1.status_code == 400 or data.get("status") == "blocked"
-errored = data.get("status") == "error"   # a THIRD state — not a success
+async def ensure_group(redis, config) -> None:
+    try:
+        await redis.xgroup_create(config.stream_key, config.consumer_group, id="0", mkstream=True)
+    except aioredis.ResponseError as e:
+        if "BUSYGROUP" not in str(e):
+            raise          # a real failure must not look like a normal restart
 ```
-
-Report `blocked / passed / errored / timeout` as four distinct outcomes. An errored
-attack is an inconclusive test, not a defended one.
-
-**Effort:** ~2 hours for Option B, ~5 for Option A. Option B is the better
-risk-adjusted choice.
 
 ---
 
-## 2.4 Publish the numbers you'd be asked for
+## B.4 Decouple `/health` from TensorZero liveness
 
-An interviewer will ask three questions. Have all three answered in the README.
+[app/main.py:485](app/main.py#L485) returns 503 if TensorZero is unreachable, so the ALB
+deregisters **every** task — a gateway blip takes down `/result/{job_id}` reads and the
+frontend, neither of which needs the LLM gateway.
 
-**(a) What does one report cost?** Today: search + summarize + write + critic
-(4 GPT-4o calls, 8 with a retry) plus 4 judge calls on *every* request. Instrument
-it — TensorZero already returns token usage; log `input_tokens`, `output_tokens`
-and computed cost per job, expose a rolling average on `/stats`. Then publish:
+Split the concerns: report `tensorzero` status in the body (observability) but only fail
+the ALB health check on `redis` + `database` (the deps every request path needs). Keep
+the worker heartbeat out of the app's own liveness too — a dead worker should page you,
+not delete the API.
 
-```
-Cost per report: $0.0XX  (median, n=50)
-p50 latency: XXs   p95: XXs
-Cache hit rate: XX%   LTM hit rate: XX%
-Idle infra cost: $XXX/mo
-```
-
-**(b) How well does it work?** Publish the golden-set results from 1.3, including
-the judge–human correlation, **even if the correlation is mediocre**. Reporting a
-weak number honestly reads as senior. A dashboard of 8.7/10s from a self-grading
-judge reads as naive.
-
-**(c) What are the failure modes?** A short "Known Limitations" section: search
-provider coverage, model cutoff on non-indexed topics, single-region, worker restart
-semantics. You already write reviews like this for your other projects — this repo
-should have one too.
-
-**Effort:** ~3 hours.
+**Interview value:** "I distinguish liveness from dependency health" is a real SRE
+answer, and it's a one-line change.
 
 ---
 
-## 2.5 Rewrite the README to match the code
+## B.5 Guard the semantic cache against false-positive hits
 
-Current mismatches:
+`cache_similarity_threshold = 0.85` over MiniLM *topic* embeddings will collide
+"Fed rate policy 2025" with "Fed rate policy 2024" and serve a stale report as fresh.
+There is no test for a false-positive hit — only for a true one.
 
-- Claims a **Search** agent — it retrieves nothing until 1.1 lands.
-- Claims **PyRIT 0.14.0 automated red team** — PyRIT is initialised and bypassed.
-- Claims RDS **deletion protection is enabled** — `main.tf` sets it `false`.
-- Architecture table lists components without saying what is *not* there
-  (no reranking, no HITL, single region, no multi-tenancy).
-
-Add an **Architecture Decisions** section — 6–8 short entries with the trade-off you
-actually made:
-
-```markdown
-### Why Redis Streams instead of SQS
-Consumer groups give at-least-once delivery with per-consumer ack, and Redis was
-already provisioned for the semantic cache and session memory. SQS would have meant
-a second broker for no additional capability at this scale. Trade-off: no managed
-DLQ, so the dead-letter stream is implemented in application code (app/worker.py).
-```
-
-Do the same for: TensorZero over LiteLLM, pgvector over a dedicated vector DB,
-ECS Fargate over Lambda, Bedrock Guardrails over an in-process classifier,
-`all-MiniLM-L6-v2` over a larger embedding model.
-
-This is the cheapest item on the list and it changes how the whole repo reads.
-The architecture diagram in `architecture.html` should be regenerated to show the
-worker as a separate service and the search tool as an external dependency.
-
-**Effort:** ~2 hours.
+**Do:**
+- Add a test in `tests/test_cache.py` that stores under one topic and asserts a *near*
+  but semantically distinct topic misses (monkeypatch `embed` with crafted vectors —
+  `conftest.py` already tells you to do exactly this).
+- Raise the threshold to ~0.93 for the cache specifically, or add a cheap year/entity
+  guard. Justify whichever you pick in the README's Architecture Decisions — the
+  reasoning matters more than the number.
+- Note the growth issue: `_cache_key` hashes the *exact* query while lookup is semantic,
+  so N phrasings of one topic write N rows, evicted only by TTL. Either add a periodic
+  `DELETE FROM semantic_cache WHERE expires_at < NOW()` or say so in Known Limitations.
 
 ---
 
-# TIER 3 — Beyond 8.5 (only after Tier 1 and 2 are done)
+# TIER C — Defensibility (zero code, highest cost-per-hour if skipped)
 
-- **Streaming responses.** SSE token streaming from writer → frontend. Removes the
-  poll loop and is what users actually expect from a research tool in 2026.
-- **LangGraph checkpointer.** Postgres `AsyncPostgresSaver` so a worker crash resumes
-  mid-graph instead of restarting the pipeline. You already run Postgres.
-- **Human-in-the-loop.** LangGraph `interrupt()` before the writer node so a user can
-  approve or edit the source set. Real use of a LangGraph feature that a for-loop
-  cannot replicate — and a direct answer to "why LangGraph?"
-- **Prompt versioning.** TensorZero variants with weights, A/B two writer prompts,
-  and use the golden set to pick a winner on evidence.
-- **Cost guardrail.** Per-session token budget in Redis; reject when exceeded.
-- **Reranking.** FlashRank over search results before they hit the writer's context.
+11 commits, ~5,700 lines, 1,247 of them Terraform, in 3 days. Heavy AI assistance is
+obvious and completely fine — everyone works this way now. The risk isn't "did you
+build this," it's **"why is it built this way."** If the depth outruns your ability to
+defend it, the depth works against you.
+
+Write short answers to these and make sure they're *yours*:
+
+- Why `min_idle_ms=120_000` in `claim_stale_jobs`, and what breaks at 10s or at 10min?
+- Why `DLQ_MAX_DELIVERIES = 3`?
+- `ivfflat` vs `hnsw` for pgvector — why, and at what row count does the choice flip?
+- Why `lists = 100` on the ivfflat index? (The usual heuristic is ~rows/1000 — what does
+  that imply about your current row count?)
+- Redis Streams vs SQS — you have this written; can you also say what would make you switch?
+- Why `all-MiniLM-L6-v2` (384d) and what you'd lose/gain at 768d.
+- Why the critic runs on a different vendor than the writer, and what specific failure
+  mode that prevents.
+- Where does this break at 100 concurrent jobs? (Real answer: Tavily rate limits,
+  `db_pool_max=10` per task, and no LangGraph checkpointer, so any crash replays every
+  paid call.)
+
+Also fix the one doc drift: README's OIDC section still says the sub claim is
+`repo:OWNER/REPO:ref:refs/heads/main`, but commit `ee6b8da` established this account's
+tokens embed **numeric owner/repo IDs**. Correct it — that finding is one of your best
+stories and the README currently contradicts it.
+
+---
+
+# TIER D — Beyond 8.5 (a separate project, not a gap in this one)
+
+Explicitly out of scope for reaching 8.5. Listed so "not started" reads as a decision
+rather than an oversight:
+
+- LangGraph `PostgresSaver` checkpointer — a worker crash mid-graph currently replays
+  every paid LLM call from zero. Highest-value item here.
+- Streaming responses (SSE) — biggest perceived-latency win.
+- Prompt A/B via TensorZero variants, scored against the judge from A.1. The natural
+  sequel: once your judge is validated, it becomes an optimization signal.
+- Per-session cost guardrail.
+- Reranking before the writer.
+- NAT Gateway + private subnets (~$32–35/mo) and a domain for real ACM HTTPS — both
+  cost/tradeoff calls already documented honestly in Known Limitations.
 
 ---
 
 # Effort summary
 
-| Tier | Items | Effort | Score |
-|---|---|---|---|
-| — | Current state | — | 6.5 |
-| 1 | Search grounding, working critic loop, honest evals, tests, 11 bug fixes | ~21 h | ~7.8 |
-| 2 | Worker split, security hardening, honest red team, published metrics, README | ~15 h | **8.5** |
-| 3 | Streaming, checkpointing, HITL, prompt A/B | ~20 h | 9+ |
+| Item | Effort | Score impact |
+|---|---|---|
+| A.1 Label golden set + publish Spearman | ~90 min | **Highest** |
+| A.2 Publish measured results + red-team table | ~1 hr | **High** |
+| B.1 State accumulation fix + invariant test | ~45 min | High (real bug) |
+| B.2 Set `API_KEY` | ~10 min | Medium |
+| B.3 `ensure_group` exception handling | ~5 min | Low |
+| B.4 Decouple `/health` | ~15 min | Medium (good interview answer) |
+| B.5 Cache false-positive guard + test | ~40 min | Medium |
+| C Defensibility prep | ~2 hrs | **Highest at interview** |
 
-Roughly one focused week for 8.5.
+Roughly **1.5 days**, most of it not writing code.
 
 ---
 
 # Definition of done for 8.5
 
-- [ ] Every report cites real, resolvable URLs; removing the search key fails the job loudly
-- [ ] Judge model ≠ writer model, and the README reports measured judge–human correlation
-- [ ] `pytest` passes offline with no AWS credentials; CI blocks deploy on failure; coverage ≥ 60%
-- [ ] All 11 bugs in 1.5 fixed, each with a regression test
-- [ ] A rejected report demonstrably retries with *different* search queries (LangSmith trace)
-- [ ] Worker runs as its own ECS service, scaling on queue depth
-- [ ] ECS tasks in private subnets; RDS and Redis encrypted; Redis AUTH enabled
-- [ ] PyRIT dashboard requires auth; blocked/passed/errored are three distinct outcomes
-- [ ] CI authenticates via OIDC, no long-lived AWS keys
-- [ ] README contains cost-per-report, p50/p95 latency, eval results, and known limitations
-- [ ] Zero claims in the README that the code does not implement
+- [ ] ≥10 golden-set rows hand-labeled; real Spearman number in the README
+- [ ] README has a `## Measured Results` section: p50/p95, cost/report, hit rates, n
+- [ ] Red-team table published including any attack that got through
+- [ ] Critic retry accumulates sources; citation-integrity invariant is under test
+- [ ] `API_KEY` set in Secrets Manager; cleartext-over-HTTP caveat documented
+- [ ] `/health` fails the ALB check only on hard dependencies
+- [ ] A test proves a semantically-near-but-distinct topic *misses* the cache
+- [ ] README OIDC section matches the numeric-sub-claim finding in `ee6b8da`
+- [ ] You can answer every question in Tier C without looking anything up
 
 ---
 
 ## The one-line version
 
-Items **1.1 (real search)**, **1.4 (tests)**, and **1.3 (independent judge)** are
-worth more than everything else combined. They convert the project's three weakest
-answers — *"where do the facts come from?"*, *"how do you know it works?"*,
-*"what's your test story?"* — from stumbles into strengths. If you only have a
-weekend, do those three.
+The infrastructure is already 8+. Prove the output is good (A.1), publish what you
+measured (A.2), fix the retry loop that quietly breaks your own citation guarantee
+(B.1) — and be able to defend all of it out loud.

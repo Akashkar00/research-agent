@@ -578,6 +578,24 @@ resource "aws_lb_listener" "http" {
   }
 }
 
+resource "aws_lb_listener_rule" "pyrit_via_http" {
+  # Lets the red-team harness's API be reached on port 80 alongside the main app, for
+  # clients/networks that block outbound traffic to non-standard ports like 8001 (the
+  # harness's own dedicated listener, still in place below). No path rewriting needed —
+  # these three routes don't collide with the main app's own paths.
+  listener_arn = aws_lb_listener.http.arn
+  priority     = 10
+  action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.pyrit.arn
+  }
+  condition {
+    path_pattern {
+      values = ["/run-attacks", "/results", "/status"]
+    }
+  }
+}
+
 resource "aws_lb_listener" "https" {
   count             = local.https_enabled ? 1 : 0
   load_balancer_arn = aws_lb.main.arn

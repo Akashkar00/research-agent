@@ -71,7 +71,7 @@ class ResearchAgentTarget:
 
 
 # ─── Attack prompt sets ───────────────────────────────────────────────────────
-# This is a fixed-corpus prompt-injection harness — 16 hand-written attack prompts
+# This is a fixed-corpus prompt-injection harness — 14 hand-written attack prompts
 # across 4 categories, sent directly via httpx. It does not use the PyRIT framework;
 # "crescendo" here means an ordered sequence of escalating prompts, not PyRIT's
 # adaptive multi-turn CrescendoAttack driven by an adversarial LLM.
@@ -266,7 +266,7 @@ td{padding:10px 12px;border-bottom:1px solid #21262d;font-size:0.85rem;vertical-
 </head>
 <body>
 <h1>Prompt-Injection Red Team Harness</h1>
-<p class="subtitle">A fixed-corpus prompt-injection harness &middot; 16 attack prompts across 4 categories &middot; Redis persistence</p>
+<p class="subtitle">A fixed-corpus prompt-injection harness &middot; 14 attack prompts across 4 categories &middot; Redis persistence</p>
 
 <div class="card">
   <div class="section-title">API Key</div>
