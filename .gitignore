@@ -23,5 +23,9 @@ evals/golden_results.json
 .env
 *.pem
 
+# Personal (not project source — contains PII, doesn't belong in a public repo)
+akash.tex
+*.pdf
+
 # OS
 .DS_Store
