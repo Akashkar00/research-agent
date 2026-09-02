@@ -24,6 +24,53 @@ Give it a topic → it researches, writes a full report, safety-checks it, cache
 
 ---
 
+## Architecture
+
+```mermaid
+flowchart LR
+    User(["User / Browser"]) -->|"HTTPS"| UI["index.html\n(Frontend)"]
+    UI -->|"POST /research\nX-API-Key"| ALB["Application Load Balancer"]
+
+    ALB --> API["FastAPI (ECS)\napp/main.py\nHTTP only, no job processing"]
+    API -->|"enqueue job"| Queue[("Redis Streams\napp/queue.py\nqueue + session memory")]
+    API -->|"read cached / semantic hits"| PG[("PostgreSQL + pgvector (RDS)\nLTM + semantic cache")]
+
+    Queue -->|"XAUTOCLAIM / consume"| Worker["Worker (ECS)\napp/worker.py\nscales on QueueDepth"]
+
+    subgraph Pipeline["LangGraph pipeline — app/agents.py"]
+        direction LR
+        Search["Search\n(Tavily only)"] --> Summarize["Summarize"] --> Write["Write"] --> Verify["Verify\n(independent critic)"]
+    end
+
+    Worker --> Pipeline
+    Search -->|"web search"| Tavily["Tavily API\nonly source of facts"]
+    Write -->|"generate"| TZ["TensorZero Gateway"]
+    Verify -->|"grade"| TZ
+    TZ -->|"writer path"| GPT4o["GPT-4o\n(falls back: Groq Llama)"]
+    TZ -->|"judge / critic path"| Groq["Groq Llama\n(never the writer model)"]
+
+    API -->|"input check"| Guard["AWS Bedrock Guardrails"]
+    Worker -->|"output check"| Guard
+
+    Worker -->|"write result"| Queue
+    Worker -->|"persist report + cache"| PG
+    API -->|"poll /result"| Queue
+
+    Worker -.->|"traces + LLM-as-judge evals"| LangSmith["LangSmith"]
+
+    RedTeam["Red Team Harness (ECS)\n:8001 — 14 fixed attack prompts"] -->|"HTTP attacks"| ALB
+
+    GH["GitHub Actions\nOIDC, no static keys"] -->|"build + deploy"| API
+    GH --> Worker
+    GH --> RedTeam
+
+    style Pipeline fill:#f4f4f4,stroke:#999
+```
+
+**Request flow:** browser submits a topic through the FastAPI service, which enqueues a job on Redis Streams and returns immediately; the decoupled Worker service pulls the job, runs the 4-node LangGraph pipeline (Tavily search → summarize → write via TensorZero/GPT-4o → verify via TensorZero/Groq Llama, a different vendor and model than the writer), passes input/output through Bedrock Guardrails, then writes the result back to Redis and persists it to Postgres/pgvector for long-term memory and the semantic cache. Every run is traced to LangSmith. The Red Team Harness attacks the same live ALB endpoint on a schedule and on demand. GitHub Actions deploys all three ECS services via OIDC, no long-lived AWS keys.
+
+---
+
 ## File Structure
 
 ```
